@@ -420,14 +420,16 @@ ClangImporter::~ClangImporter() {
 
 #pragma mark Module loading
 
-/// Finds the glibc.modulemap file relative to the provided resource dir.
+/// Finds a system modulemap file relative to the provided resource dir,
+/// for example, glibc.modulemap or winsdk.modulemap
 ///
 /// Note that the module map used for Glibc depends on the target we're
 /// compiling for, and is not included in the resource directory with the other
 /// implicit module maps. It's at {freebsd|linux}/{arch}/glibc.modulemap.
 static Optional<StringRef>
-getGlibcModuleMapPath(SearchPathOptions& Opts, llvm::Triple triple,
-                      SmallVectorImpl<char> &buffer) {
+getSystemModuleMapPath(std::string name,
+                       SearchPathOptions& Opts, llvm::Triple triple,
+                       SmallVectorImpl<char> &buffer) {
   StringRef platform = swift::getPlatformNameForTriple(triple);
   StringRef arch = swift::getMajorArchitectureName(triple);
 
@@ -435,7 +437,7 @@ getGlibcModuleMapPath(SearchPathOptions& Opts, llvm::Triple triple,
     buffer.clear();
     buffer.append(Opts.SDKPath.begin(), Opts.SDKPath.end());
     llvm::sys::path::append(buffer, "usr", "lib", "swift");
-    llvm::sys::path::append(buffer, platform, arch, "glibc.modulemap");
+    llvm::sys::path::append(buffer, platform, arch, name + ".modulemap");
 
     // Only specify the module map if that file actually exists.  It may not;
     // for example in the case that `swiftc -target x86_64-unknown-linux-gnu
@@ -448,7 +450,7 @@ getGlibcModuleMapPath(SearchPathOptions& Opts, llvm::Triple triple,
     buffer.clear();
     buffer.append(Opts.RuntimeResourcePath.begin(),
                   Opts.RuntimeResourcePath.end());
-    llvm::sys::path::append(buffer, platform, arch, "glibc.modulemap");
+    llvm::sys::path::append(buffer, platform, arch, name + ".modulemap");
 
     // Only specify the module map if that file actually exists.  It may not;
     // for example in the case that `swiftc -target x86_64-unknown-linux-gnu
@@ -621,10 +623,17 @@ importer::getNormalInvocationArguments(
     }
 
     SmallString<128> buffer;
-    if (auto path = getGlibcModuleMapPath(searchPathOpts, triple, buffer)) {
-      invocationArgStrs.push_back((Twine("-fmodule-map-file=") + *path).str());
-    } else {
-      // FIXME: Emit a warning of some kind.
+    std::vector<std::string> moduleNames = {
+      "glibc",
+      "winsdk",
+      "ucrt",
+    };
+    for (auto moduleName : moduleNames) {
+      if (auto path = getSystemModuleMapPath(moduleName, searchPathOpts, triple, buffer)) {
+        invocationArgStrs.push_back((Twine("-fmodule-map-file=") + *path).str());
+      } else {
+        // FIXME: Emit a warning of some kind.
+      }
     }
   }
 
