@@ -153,7 +153,6 @@ SIMPLE_DECL_ATTR(main, MainType,
   7)
 SIMPLE_DECL_ATTR(_exported, Exported,
   OnImport |
-  UserInaccessible |
   ABIStableToAdd | ABIStableToRemove | APIStableToAdd | APIStableToRemove,
   8)
 SIMPLE_DECL_ATTR(dynamicMemberLookup, DynamicMemberLookup,
