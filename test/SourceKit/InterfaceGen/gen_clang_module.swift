@@ -73,8 +73,8 @@ var x: FooClassBase
 
 // RUN: %sourcekitd-test -req=interface-gen-open -module Foo -- -I %t.overlays -F %S/../Inputs/libIDE-mock-sdk \
 // RUN:         -target %target-triple %clang-importer-sdk-nosource -I %t \
-// RUN:      == -req=cursor -pos=1:8 == -req=cursor -pos=1:12 \
-// RUN:      == -req=cursor -pos=2:8 | %FileCheck -check-prefix=CHECK-IMPORT %s
+// RUN:      == -req=cursor -pos=1:19 == -req=cursor -pos=1:23 \
+// RUN:      == -req=cursor -pos=2:19 | %FileCheck -check-prefix=CHECK-IMPORT %s
 // The cursors point to module names inside the imports, see 'gen_clang_module.swift.response'
 
 // CHECK-IMPORT: 	  source.lang.swift.ref.module ()
