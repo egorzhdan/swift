@@ -3639,6 +3639,22 @@ namespace {
             return nullptr;
           }
         }
+
+        for (const auto method : methods) {
+          if (method->hasParameterList() && method->getParameters()->size() == 1) {
+            const auto parameterType = method->getParameters()->get(0)->getType();
+            if (parameterType &&
+                Impl.CXXSubscripts.find(parameterType) != Impl.CXXSubscripts.end()) {
+
+              auto cxxSubscripts = Impl.CXXSubscripts[parameterType];
+              auto subscript = makeSubscript(cxxSubscripts.first, cxxSubscripts.second);
+              result->addMember(subscript);
+
+              // Make sure we don't generate the same subscript twice.
+              Impl.CXXSubscripts.erase(parameterType);
+            }
+          }
+        }
       }
 
       return result;
@@ -3913,7 +3929,7 @@ namespace {
 
       case ImportedAccessorKind::SubscriptGetter:
       case ImportedAccessorKind::SubscriptSetter:
-        llvm_unreachable("Not possible for a function");
+        break;
 
       case ImportedAccessorKind::PropertyGetter: {
         auto property = getImplicitProperty(importedName, decl);
@@ -4113,8 +4129,36 @@ namespace {
             func->setImportAsStaticMember();
           }
         }
-        // Someday, maybe this will need to be 'open' for C++ virtual methods.
-        func->setAccess(AccessLevel::Public);
+
+        if (importedName.isSubscriptAccessor()) {
+          assert(func->getParameters()->size() == 1);
+          const auto parameterType = func->getParameters()->get(0)->getType();
+          if (!parameterType)
+            return nullptr;
+
+          auto cxxSubscripts = Impl.CXXSubscripts[parameterType];
+
+          switch (importedName.getAccessorKind()) {
+          case ImportedAccessorKind::SubscriptGetter:
+            cxxSubscripts.first = func;
+            break;
+          case ImportedAccessorKind::SubscriptSetter:
+            cxxSubscripts.second = func;
+            break;
+          default:
+            llvm_unreachable("invalid subscript kind");
+          }
+
+          Impl.CXXSubscripts[parameterType] = cxxSubscripts;
+
+          // These methods should be private, but SIL doesn't allow that,
+          // so mark them as unavailable instead.
+          Impl.markUnavailable(func, "use subscript");
+          func->setAccess(AccessLevel::Public);
+        } else {
+          // Someday, maybe this will need to be 'open' for C++ virtual methods.
+          func->setAccess(AccessLevel::Public);
+        }
       }
 
       result->setIsObjC(false);
@@ -4940,6 +4984,15 @@ namespace {
     /// create the Swift subscript declaration.
     SubscriptDecl *importSubscript(Decl *decl,
                                    const clang::ObjCMethodDecl *objcMethod);
+
+    /// Given either the getter, the setter, or both getter & setter
+    /// for a subscript operation, create the Swift subscript declaration.
+    ///
+    /// \param getter function returning `UnsafePointer<T>`
+    /// \param setter function returning `UnsafeMutablePointer<T>`
+    /// \return subscript declaration
+    SubscriptDecl *makeSubscript(FuncDecl *getter,
+                                 FuncDecl *setter);
 
     /// Import the accessor and its attributes.
     AccessorDecl *importAccessor(clang::ObjCMethodDecl *clangAccessor,
@@ -7328,6 +7381,236 @@ SwiftDeclConverter::importAccessor(clang::ObjCMethodDecl *clangAccessor,
   Impl.importAttributes(clangAccessor, accessor);
 
   return accessor;
+}
+
+static InOutExpr *
+createInOutSelfExpr(AccessorDecl *accessorDecl) {
+  ASTContext &ctx = accessorDecl->getASTContext();
+
+  auto inoutSelfDecl = accessorDecl->getImplicitSelfDecl();
+  auto inoutSelfRefExpr =
+      new(ctx) DeclRefExpr(inoutSelfDecl, DeclNameLoc(),
+          /*implicit=*/ true);
+  inoutSelfRefExpr->setType(LValueType::get(inoutSelfDecl->getInterfaceType()));
+
+  auto inoutSelfExpr =
+      new(ctx) InOutExpr(SourceLoc(),
+                         inoutSelfRefExpr,
+                         accessorDecl->mapTypeIntoContext( // changed!
+                             inoutSelfDecl->getValueInterfaceType()),
+          /*isImplicit=*/ true);
+  inoutSelfExpr->setType(InOutType::get(inoutSelfDecl->getInterfaceType()));
+  return inoutSelfExpr;
+}
+
+static DeclRefExpr *
+createParamRefExpr(AccessorDecl *accessorDecl, unsigned index) {
+  ASTContext &ctx = accessorDecl->getASTContext();
+
+  auto paramDecl = accessorDecl->getParameters()->get(index);
+  auto paramRefExpr = new(ctx) DeclRefExpr(paramDecl,
+                                           DeclNameLoc(),
+      /*Implicit=*/ true);
+  paramRefExpr->setType(paramDecl->getType());
+  return paramRefExpr;
+}
+
+static CallExpr *
+createAccessorImplCallExpr(FuncDecl *accessorImpl,
+                           InOutExpr *inoutSelfExpr,
+                           DeclRefExpr *keyRefExpr) {
+  ASTContext &ctx = accessorImpl->getASTContext();
+
+  auto accessorImplExpr =
+      new(ctx) DeclRefExpr(ConcreteDeclRef(accessorImpl),
+                           DeclNameLoc(),
+          /*Implicit=*/ true);
+  accessorImplExpr->setType(accessorImpl->getInterfaceType());
+
+  auto accessorImplDotCallExpr =
+      new(ctx) DotSyntaxCallExpr(accessorImplExpr,
+                                 SourceLoc(),
+                                 inoutSelfExpr);
+  accessorImplDotCallExpr->setType(accessorImpl->getMethodInterfaceType());
+  accessorImplDotCallExpr->setThrows(false);
+
+  auto *accessorImplCallExpr =
+      CallExpr::createImplicit(ctx, accessorImplDotCallExpr,
+                               { keyRefExpr }, { Identifier() });
+  accessorImplCallExpr->setType(accessorImpl->getResultInterfaceType());
+  accessorImplCallExpr->setThrows(false);
+  return accessorImplCallExpr;
+}
+
+/// Synthesizer callback for a subscript getter.
+static std::pair<BraceStmt *, bool>
+synthesizeSubscriptGetterBody(AbstractFunctionDecl *afd, void *context) {
+  auto getterDecl = cast<AccessorDecl>(afd);
+  auto getterImpl = static_cast<FuncDecl *>(context);
+
+  ASTContext &ctx = getterDecl->getASTContext();
+
+  InOutExpr *inoutSelfExpr = createInOutSelfExpr(getterDecl);
+  DeclRefExpr *keyRefExpr = createParamRefExpr(getterDecl, 0);
+
+  const Type &elementTy = getterDecl->getResultInterfaceType();
+
+  auto *getterImplCallExpr = createAccessorImplCallExpr(getterImpl,
+                                                        inoutSelfExpr,
+                                                        keyRefExpr);
+
+  // `getterImpl` can return either UnsafePointer or UnsafeMutablePointer.
+  // Retrieve the corresponding `.pointee` declaration.
+  PointerTypeKind ptrKind;
+  getterImpl->getResultInterfaceType()->getAnyPointerElementType(ptrKind);
+  VarDecl *pointeePropertyDecl = ctx.getPointerPointeePropertyDecl(ptrKind);
+
+  SubstitutionMap subMap =
+      SubstitutionMap::get(ctx.getUnsafePointerDecl()->getGenericSignature(),
+                           { elementTy }, { });
+  auto pointeePropertyRefExpr =
+      new(ctx) MemberRefExpr(getterImplCallExpr,
+                             SourceLoc(),
+                             ConcreteDeclRef(pointeePropertyDecl, subMap),
+                             DeclNameLoc(),
+          /*implicit=*/ true);
+  pointeePropertyRefExpr->setType(elementTy);
+
+  auto returnStmt = new(ctx) ReturnStmt(SourceLoc(), pointeePropertyRefExpr,
+      /*implicit=*/ true);
+
+  auto body = BraceStmt::create(ctx, SourceLoc(), { returnStmt }, SourceLoc(),
+      /*implicit=*/ true);
+  return { body, /*isTypeChecked=*/true };
+}
+
+/// Synthesizer callback for a subscript getter.
+static std::pair<BraceStmt *, bool>
+synthesizeSubscriptSetterBody(AbstractFunctionDecl *afd, void *context) {
+  auto setterDecl = cast<AccessorDecl>(afd);
+  auto setterImpl = static_cast<FuncDecl *>(context);
+
+  ASTContext &ctx = setterDecl->getASTContext();
+
+  InOutExpr *inoutSelfExpr = createInOutSelfExpr(setterDecl);
+  DeclRefExpr *valueParamRefExpr = createParamRefExpr(setterDecl, 0);
+  DeclRefExpr *keyParamRefExpr = createParamRefExpr(setterDecl, 1);
+
+  const Type &elementTy = valueParamRefExpr->getDecl()->getInterfaceType();
+
+  auto *setterImplCallExpr = createAccessorImplCallExpr(setterImpl,
+                                                        inoutSelfExpr,
+                                                        keyParamRefExpr);
+
+  VarDecl *pointeePropertyDecl = ctx.getPointerPointeePropertyDecl(PTK_UnsafeMutablePointer);
+
+  SubstitutionMap subMap =
+      SubstitutionMap::get(ctx.getUnsafeMutablePointerDecl()->getGenericSignature(),
+                           { elementTy }, { });
+  auto pointeePropertyRefExpr =
+      new(ctx) MemberRefExpr(setterImplCallExpr,
+                             SourceLoc(),
+                             ConcreteDeclRef(pointeePropertyDecl, subMap),
+                             DeclNameLoc(),
+          /*implicit=*/ true);
+  pointeePropertyRefExpr->setType(LValueType::get(elementTy));
+
+  auto assignExpr = new(ctx) AssignExpr(pointeePropertyRefExpr,
+                                        SourceLoc(),
+                                        valueParamRefExpr,
+      /*implicit*/ true);
+  assignExpr->setType(TupleType::getEmpty(ctx));
+
+  auto body = BraceStmt::create(ctx, SourceLoc(), { assignExpr, }, SourceLoc());
+  return { body, /*isTypeChecked=*/true };
+}
+
+SubscriptDecl *
+SwiftDeclConverter::makeSubscript(FuncDecl *getter, FuncDecl *setter) {
+  assert((getter || setter) && "getter or setter required to generate subscript");
+
+  // If only a setter (imported from non-const `operator[]`) is defined,
+  // generate both get & set accessors from it.
+  FuncDecl *getterImpl = getter ? getter : setter;
+  FuncDecl *setterImpl = setter;
+
+  // Get the return type wrapped in `Unsafe(Mutable)Pointer`.
+  const auto rawElementTy = getterImpl->getResultInterfaceType();
+  // Unwrap `UnsafePointer`.
+  const auto elementTy = rawElementTy->getAnyPointerElementType();
+
+  auto &ctx = Impl.SwiftContext;
+  auto bodyParams = getterImpl->getParameters();
+  DeclName name(ctx, DeclBaseName::createSubscript(), bodyParams);
+  auto dc = getterImpl->getDeclContext();
+
+  SubscriptDecl *subscript = SubscriptDecl::createImported(ctx,
+                                                           name,
+                                                           getterImpl->getLoc(),
+                                                           bodyParams,
+                                                           getterImpl->getLoc(),
+                                                           elementTy,
+                                                           dc,
+                                                           getterImpl->getClangNode());
+  subscript->setAccess(AccessLevel::Public);
+
+  AccessorDecl *getterDecl = AccessorDecl::create(ctx,
+                                                  getterImpl->getLoc(),
+                                                  getterImpl->getLoc(),
+                                                  AccessorKind::Get,
+                                                  subscript,
+                                                  SourceLoc(),
+                                                  subscript->getStaticSpelling(),
+                                                  false,
+                                                  SourceLoc(),
+                                                  nullptr,
+                                                  bodyParams,
+                                                  elementTy,
+                                                  dc);
+  getterDecl->setAccess(AccessLevel::Public);
+  getterDecl->setImplicit();
+  getterDecl->setIsDynamic(false);
+  getterDecl->setBodySynthesizer(synthesizeSubscriptGetterBody, getterImpl);
+
+  getterDecl->setSelfAccessKind(SelfAccessKind::Mutating);
+  subscript->setIsGetterMutating(true);
+
+  AccessorDecl *setterDecl = nullptr;
+  if (setterImpl) {
+    auto paramVarDecl =
+        new(ctx) ParamDecl(SourceLoc(), SourceLoc(),
+                           Identifier(), SourceLoc(),
+                           ctx.getIdentifier("newValue"), dc);
+    paramVarDecl->setSpecifier(ParamSpecifier::Default);
+    paramVarDecl->setInterfaceType(elementTy);
+
+    auto setterParamList = ParameterList::create(ctx, { paramVarDecl, bodyParams->get(0) });
+
+    setterDecl = AccessorDecl::create(ctx,
+                                      setterImpl->getLoc(),
+                                      setterImpl->getLoc(),
+                                      AccessorKind::Set,
+                                      subscript,
+                                      SourceLoc(),
+                                      subscript->getStaticSpelling(),
+                                      false,
+                                      SourceLoc(),
+                                      nullptr,
+                                      setterParamList,
+                                      TupleType::getEmpty(ctx),
+                                      dc);
+    setterDecl->setAccess(AccessLevel::Public);
+    setterDecl->setImplicit();
+    setterDecl->setIsDynamic(false);
+    setterDecl->setBodySynthesizer(synthesizeSubscriptSetterBody, setterImpl);
+
+    setterDecl->setSelfAccessKind(SelfAccessKind::Mutating);
+    subscript->setIsSetterMutating(true);
+  }
+
+  makeComputed(subscript, getterDecl, setterDecl);
+
+  return subscript;
 }
 
 void SwiftDeclConverter::addProtocols(

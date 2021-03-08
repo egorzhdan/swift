@@ -490,6 +490,11 @@ public:
   /// pairs.
   llvm::DenseMap<std::pair<FuncDecl *, FuncDecl *>, SubscriptDecl *> Subscripts;
 
+  /// Keep track of getter/setter pairs for functions
+  /// imported from C++ subscript operators
+  /// based on the type of their parameter.
+  llvm::DenseMap<Type, std::pair<FuncDecl *, FuncDecl *>> CXXSubscripts;
+
   /// Keeps track of the Clang functions that have been turned into
   /// properties.
   llvm::DenseMap<const clang::FunctionDecl *, VarDecl *> FunctionsAsProperties;
