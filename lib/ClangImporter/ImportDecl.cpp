@@ -4163,6 +4163,23 @@ namespace {
           }
         }
 
+        if (importedName.getDeclName().isOperator() &&
+            importedName.getDeclName().getBaseIdentifier().is("==")) {
+          assert(func->getParameters()->size() == 2);
+          auto lhsParam = func->getParameters()->get(0);
+          auto rhsParam = func->getParameters()->get(1);
+
+          NominalTypeDecl *lhsTypeDecl = lhsParam->getType()->getAnyNominal();
+          NominalTypeDecl *rhsTypeDecl = rhsParam->getType()->getAnyNominal();
+
+          if (lhsTypeDecl == rhsTypeDecl &&
+              !lhsParam->isInOut() && !rhsParam->isInOut() &&
+              lhsTypeDecl->getModuleContext() == func->getModuleContext()) {
+            addSynthesizedProtocolAttrs(Impl, lhsTypeDecl,
+                                        { KnownProtocolKind::Equatable });
+          }
+        }
+
         if (importedName.isSubscriptAccessor()) {
           assert(func->getParameters()->size() == 1);
           auto typeDecl = dc->getSelfNominalTypeDecl();

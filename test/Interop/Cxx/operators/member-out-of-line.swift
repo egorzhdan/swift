@@ -23,6 +23,15 @@ OperatorsTestSuite.test("LoadableIntWrapper.plus (out-of-line)") {
   expectEqual(65, result.value)
 }
 
+OperatorsTestSuite.test("LoadableIntWrapper.equal equal (out-of-line)") {
+  var lhs = LoadableIntWrapper(value: 42)
+  let rhs = LoadableIntWrapper(value: 42)
+  let rhs2 = LoadableIntWrapper(value: 21)
+
+  expectTrue(lhs == rhs)
+  expectTrue(lhs != rhs2)
+}
+
 OperatorsTestSuite.test("LoadableIntWrapper.call (out-of-line)") {
   var wrapper = LoadableIntWrapper(value: 42)
 

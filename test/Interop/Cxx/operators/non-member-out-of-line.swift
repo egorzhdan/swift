@@ -20,4 +20,11 @@ OperatorsTestSuite.test("plus") {
   expectEqual(65, result.value)
 }
 
+OperatorsTestSuite.test("equal equal") {
+  let lhs = LoadableIntWrapper(value: 42)
+  let rhs = LoadableIntWrapper(value: 42)
+
+  expectTrue(lhs == rhs)
+}
+
 runAllTests()

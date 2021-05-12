@@ -19,6 +19,15 @@ OperatorsTestSuite.test("LoadableIntWrapper.plus (inline)") {
   expectEqual(19, result.value)
 }
 
+OperatorsTestSuite.test("LoadableIntWrapper.equal equal (inline)") {
+  var lhs = LoadableIntWrapper(value: 11)
+  let rhs = LoadableIntWrapper(value: 11)
+  let rhs2 = LoadableIntWrapper(value: 12)
+
+  expectTrue(lhs == rhs)
+  expectTrue(lhs != rhs2)
+}
+
 OperatorsTestSuite.test("LoadableIntWrapper.call (inline)") {
   var wrapper = LoadableIntWrapper(value: 42)
 

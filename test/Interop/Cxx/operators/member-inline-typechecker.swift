@@ -6,6 +6,13 @@ var lhs = LoadableIntWrapper(value: 42)
 let rhs = LoadableIntWrapper(value: 23)
 
 let resultPlus = lhs - rhs
+
+let resultEqual = lhs == rhs
+let resultNotEqual = lhs != rhs
+
+func acceptsEquatable<T>(_ e: T) where T: Equatable { }
+acceptsEquatable(lhs)
+
 let resultCall0 = lhs()
 let resultCall1 = lhs(1)
 let resultCall2 = lhs(1, 2)

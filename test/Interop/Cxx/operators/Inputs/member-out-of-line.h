@@ -4,6 +4,9 @@
 struct LoadableIntWrapper {
   int value;
   LoadableIntWrapper operator+(LoadableIntWrapper rhs) const;
+
+  bool operator==(LoadableIntWrapper rhs) const;
+
   int operator()() const;
   int operator()(int x) const;
   int operator()(int x, int y) const;
@@ -14,6 +17,8 @@ struct AddressOnlyIntWrapper {
 
   AddressOnlyIntWrapper(int value) : value(value) {}
   AddressOnlyIntWrapper(const AddressOnlyIntWrapper &other) : value(other.value) {}
+
+  bool operator==(LoadableIntWrapper rhs) const;
 
   int operator()() const;
   int operator()(int x) const;

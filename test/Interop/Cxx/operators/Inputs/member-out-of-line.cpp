@@ -4,6 +4,10 @@ LoadableIntWrapper LoadableIntWrapper::operator+(LoadableIntWrapper rhs) const {
   return LoadableIntWrapper{.value = value + rhs.value};
 }
 
+bool LoadableIntWrapper::operator==(LoadableIntWrapper rhs) const {
+  return value == rhs.value;
+}
+
 int LoadableIntWrapper::operator()() const {
   return value;
 }
@@ -14,6 +18,10 @@ int LoadableIntWrapper::operator()(int x) const {
 
 int LoadableIntWrapper::operator()(int x, int y) const {
   return value + x * y;
+}
+
+bool AddressOnlyIntWrapper::operator==(LoadableIntWrapper rhs) const {
+  return value == rhs.value;
 }
 
 int AddressOnlyIntWrapper::operator()() const {

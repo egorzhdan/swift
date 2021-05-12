@@ -7,4 +7,6 @@ struct LoadableIntWrapper {
 
 LoadableIntWrapper operator+(LoadableIntWrapper lhs, LoadableIntWrapper rhs);
 
+bool operator==(LoadableIntWrapper lhs, LoadableIntWrapper rhs);
+
 #endif

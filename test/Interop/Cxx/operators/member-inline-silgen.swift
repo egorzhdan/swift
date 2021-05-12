@@ -13,6 +13,17 @@ public func sub(_ lhs: inout LoadableIntWrapper, _ rhs: LoadableIntWrapper) -> L
 
 // CHECK: sil [clang LoadableIntWrapper."-"] [[NAME]] : $@convention(c) (@inout LoadableIntWrapper, LoadableIntWrapper) -> LoadableIntWrapper
 
+public func equal(_ lhs: inout LoadableIntWrapper, _ rhs: LoadableIntWrapper) -> Bool { lhs == rhs }
+
+// CHECK: bb0([[SELF:%.*]] : $*LoadableIntWrapper, [[RHS:%.*]] : $LoadableIntWrapper):
+
+// CHECK: [[SELFACCESS:%.*]] = begin_access [modify] [static] [[SELF]] : $*LoadableIntWrapper
+// CHECK: [[OP:%.*]] = function_ref [[NAME:@(_ZNK18LoadableIntWrappereqES_|\?\?8LoadableIntWrapper@@QEBA_NU0@@Z)]] : $@convention(c) (@inout LoadableIntWrapper, LoadableIntWrapper) -> Bool
+// CHECK: apply [[OP]]([[SELFACCESS]], [[RHS]]) : $@convention(c) (@inout LoadableIntWrapper, LoadableIntWrapper) -> Bool
+// CHECK: end_access [[SELFACCESS]] : $*LoadableIntWrapper
+
+// CHECK: sil [clang LoadableIntWrapper."=="] [[NAME]] : $@convention(c) (@inout LoadableIntWrapper, LoadableIntWrapper) -> Bool
+
 public func call(_ wrapper: inout LoadableIntWrapper, _ arg: Int32) -> Int32 { wrapper(arg) }
 
 // CHECK: bb0([[SELF:%.*]] : $*LoadableIntWrapper, [[RHS:%.*]] : $Int32):

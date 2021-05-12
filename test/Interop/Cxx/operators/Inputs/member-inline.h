@@ -7,6 +7,10 @@ struct LoadableIntWrapper {
     return LoadableIntWrapper{.value = value - rhs.value};
   }
 
+  bool operator==(LoadableIntWrapper rhs) const {
+    return value == rhs.value;
+  }
+
   int operator()() {
     return value;
   }
@@ -23,6 +27,10 @@ struct AddressOnlyIntWrapper {
 
   AddressOnlyIntWrapper(int value) : value(value) {}
   AddressOnlyIntWrapper(const AddressOnlyIntWrapper &other) : value(other.value) {}
+
+  bool operator==(LoadableIntWrapper rhs) const {
+    return value == rhs.value;
+  }
 
   int operator()() {
     return value;
