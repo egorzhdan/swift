@@ -2163,12 +2163,16 @@ bool isViewType(const clang::CXXRecordDecl *decl);
 inline const clang::Type *desugarIfElaborated(const clang::Type *type) {
   if (auto elaborated = dyn_cast<clang::ElaboratedType>(type))
     return elaborated->desugar().getTypePtr();
+  if (auto deduced = dyn_cast<clang::DeducedType>(type))
+    return deduced->desugar().getTypePtr();
   return type;
 }
 
 inline clang::QualType desugarIfElaborated(clang::QualType type) {
   if (auto elaborated = dyn_cast<clang::ElaboratedType>(type))
     return elaborated->desugar();
+  if (auto deduced = dyn_cast<clang::DeducedType>(type))
+    return deduced->desugar();
   return type;
 }
 
