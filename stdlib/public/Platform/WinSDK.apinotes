@@ -1,0 +1,7 @@
+---
+Name: WinSDK
+Tags:
+- Name: IUnknown
+  SwiftImportAs: reference
+  SwiftRetainOp: .AddRef
+  SwiftReleaseOp: .Release

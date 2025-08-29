@@ -497,12 +497,28 @@ void GetWindowsFileMappings(
     if (!AuxiliaryFile.empty())
       fileMapping.redirectedFiles.emplace_back(std::string(WinSDKInjection),
                                                AuxiliaryFile);
+    
+    llvm::sys::path::remove_filename(WinSDKInjection);
+    llvm::sys::path::append(WinSDKInjection, "WinSDK.apinotes");
+    AuxiliaryFile =
+        GetPlatformAuxiliaryFile("windows", "WinSDK.apinotes", SearchPathOpts);
+    if (!AuxiliaryFile.empty())
+      fileMapping.redirectedFiles.emplace_back(std::string(WinSDKInjection),
+                                               AuxiliaryFile);
 
     llvm::sys::path::remove_filename(WinSDKInjection);
     llvm::sys::path::remove_filename(WinSDKInjection);
     llvm::sys::path::append(WinSDKInjection, "shared", "module.modulemap");
     AuxiliaryFile = GetPlatformAuxiliaryFile(
         "windows", "winsdk_shared.modulemap", SearchPathOpts);
+    if (!AuxiliaryFile.empty())
+      fileMapping.redirectedFiles.emplace_back(std::string(WinSDKInjection),
+                                               AuxiliaryFile);
+    
+    llvm::sys::path::remove_filename(WinSDKInjection);
+    llvm::sys::path::append(WinSDKInjection, "winsdk-shim.h");
+    AuxiliaryFile =
+        GetPlatformAuxiliaryFile("windows", "winsdk-shim.h", SearchPathOpts);
     if (!AuxiliaryFile.empty())
       fileMapping.redirectedFiles.emplace_back(std::string(WinSDKInjection),
                                                AuxiliaryFile);

@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 module WinSDK [system] {
+  header "winsdk-shim.h"
   module WinSock2 {
     header "WinSock2.h"
     header "WS2tcpip.h"
