@@ -1,0 +1,8 @@
+---
+Name: WinRT
+Tags:
+#- Name: HSTRING__
+#  SwiftImportAs: reference
+#  SwiftRetainOp: immortal
+#  SwiftReleaseOp: immortal
+#

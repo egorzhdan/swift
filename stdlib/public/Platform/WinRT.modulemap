@@ -1,0 +1,14 @@
+module WinRT [system] {
+  requires cplusplus
+//  link "WindowsApp.lib"
+  use WinSDK
+  export *
+
+  header "winrt-shims.h"
+  header "hstring.h"
+  header "WinRTBase.h"
+  header "roapi.h"
+  header "windows.foundation.h"
+  header "windows.ui.xaml.controls.h"
+  header "windows.ui.xaml.hosting.h"
+}
