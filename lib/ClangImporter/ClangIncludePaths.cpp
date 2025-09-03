@@ -516,9 +516,9 @@ void GetWindowsFileMappings(
                                                AuxiliaryFile);
     
     llvm::sys::path::remove_filename(WinSDKInjection);
-    llvm::sys::path::append(WinSDKInjection, "winsdk-shim.h");
+    llvm::sys::path::append(WinSDKInjection, "_GUID.apinotes");
     AuxiliaryFile =
-        GetPlatformAuxiliaryFile("windows", "winsdk-shim.h", SearchPathOpts);
+        GetPlatformAuxiliaryFile("windows", "_GUID.apinotes", SearchPathOpts);
     if (!AuxiliaryFile.empty())
       fileMapping.redirectedFiles.emplace_back(std::string(WinSDKInjection),
                                                AuxiliaryFile);

@@ -256,10 +256,20 @@ public extension FILETIME {
 }
 
 extension IID {
+  public init() {
+    self.init(GUID())
+  }
+
   public init?(_ cString: LPCOLESTR) {
     var iid = IID()
     guard IIDFromString(cString, &iid) == S_OK else { return nil }
     self = iid
+  }
+}
+
+extension CLSID {
+  public init() {
+    self.init(GUID())
   }
 }
 
