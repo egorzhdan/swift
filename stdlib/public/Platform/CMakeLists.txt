@@ -470,7 +470,7 @@ if(WINDOWS IN_LIST SWIFT_SDKS)
       winsdk_um.modulemap
       WinSDK.apinotes
       winsdk_shared.modulemap
-      _GUID.apinotes
+      _GUIDDef.apinotes
     DESTINATION "share"
     COMPONENT sdk-overlay)
 endif()

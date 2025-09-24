@@ -1,7 +1,0 @@
----
-Name: _GUID
-Typedefs:
-- Name: IID
-  SwiftWrapper: struct
-- Name: CLSID
-  SwiftWrapper: struct

@@ -1,0 +1,14 @@
+---
+Name: _GUIDDef
+#SwiftVersions:
+#- Version: 6
+#  Typedefs:
+#    - Name: IID
+#      SwiftWrapper: none
+#    - Name: CLSID
+#      SwiftWrapper: none
+Typedefs:
+- Name: IID
+  SwiftWrapper: struct
+- Name: CLSID
+  SwiftWrapper: struct
