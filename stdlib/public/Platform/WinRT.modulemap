@@ -1,14 +1,34 @@
 module WinRT [system] {
-  requires cplusplus
-//  link "WindowsApp.lib"
-  use WinSDK
+  link "WindowsApp.lib"
   export *
 
+  module Base {
+    header "WinRTBase.h"
+    export *
+  }
+
+  module _HSTRING {
+    header "hstring.h"
+    export *
+  }
+
+  module RoAPI {
+    header "roapi.h"
+    export *
+  }
+
+  module Foundation {
+    header "windows.foundation.h"
+    export *
+  }
+
   header "winrt-shims.h"
-  header "hstring.h"
-  header "WinRTBase.h"
-  header "roapi.h"
-  header "windows.foundation.h"
-  header "windows.ui.xaml.controls.h"
-  header "windows.ui.xaml.hosting.h"
+
+  module UI {
+    module XAML {
+      header "windows.ui.xaml.controls.h"
+      header "windows.ui.xaml.hosting.h"
+      export *
+    }
+  }
 }
