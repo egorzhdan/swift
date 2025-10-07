@@ -1,5 +1,6 @@
 import WinSDK
 import WinRT
+import WindowsUI
 import CxxStdlib
 
 extension Array where Array.Element == WCHAR {

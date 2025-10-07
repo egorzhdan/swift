@@ -2,12 +2,22 @@ module WinRT [system] {
   link "WindowsApp.lib"
   export *
 
+  module AsyncInfo {
+    header "asyncinfo.h"
+    export *
+  }
+
   module Base {
     header "WinRTBase.h"
     export *
   }
 
-  module _HSTRING {
+  module EventToken {
+    header "EventToken.h"
+    export *
+  }
+
+  module hstring {
     header "hstring.h"
     export *
   }
@@ -17,18 +27,28 @@ module WinRT [system] {
     export *
   }
 
-  module Foundation {
-    header "windows.foundation.h"
+  module VectorChangedEventArgs {
+    header "ivectorchangedeventargs.h"
+    export *
+  }
+
+  module WinString {
+    header "winstring.h"
     export *
   }
 
   header "winrt-shims.h"
+}
 
-  module UI {
-    module XAML {
-      header "windows.ui.xaml.controls.h"
-      header "windows.ui.xaml.hosting.h"
-      export *
-    }
+module WindowsFoundation {
+  header "windows.foundation.h"
+  export *
+}
+
+module WindowsUI {
+  module XAML {
+    header "windows.ui.xaml.controls.h"
+    header "windows.ui.xaml.hosting.h"
+    export *
   }
 }
