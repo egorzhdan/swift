@@ -16,6 +16,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "swift/AST/ASTContext.h"
+#include "swift/AST/ClangModuleLoader.h"
 #include "swift/AST/Decl.h"
 #include "swift/AST/DiagnosticEngine.h"
 #include "swift/AST/GenericEnvironment.h"
@@ -41,6 +42,7 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/GlobalDecl.h"
+#include "clang/Basic/TargetInfo.h"
 #include "clang/CodeGen/CodeGenABITypes.h"
 #include "clang/CodeGen/ModuleBuilder.h"
 #include "llvm/ADT/SmallSet.h"
@@ -3675,6 +3677,89 @@ llvm::CallBase *swift::irgen::emitCXXConstructorCall(
   return result;
 }
 
+/// If \p f is the initializing entry point of a constructor of a C++ foreign
+/// reference type, return that C++ constructor.
+static const clang::CXXConstructorDecl *
+getForeignReferenceInitializerConstructor(IRGenModule &IGM, SILFunction *f) {
+  // The allocating entry point of the same constructor is a C function.
+  if (f->getLoweredFunctionType()->getRepresentation() !=
+      SILFunctionTypeRepresentation::CXXMethod)
+    return nullptr;
+  auto ctor = dyn_cast_or_null<ConstructorDecl>(f->getClangNodeOwner());
+  if (!ctor)
+    return nullptr;
+  return IGM.Context.getClangModuleLoader()->getForeignReferenceConstructor(
+      ctor);
+}
+
+/// Emit the initializing entry point \p f of the constructor \p ctor of a C++
+/// foreign reference type. It is a C++ method that runs the base-object
+/// constructor on `this`, the storage of a Swift subclass, and returns `this`.
+static llvm::Function *
+emitForeignReferenceInitializerThunk(IRGenModule &IGM, SILFunction *f,
+                                     const clang::CXXConstructorDecl *ctor) {
+  // The thunk has private linkage, so it doesn't need to have a predictable
+  // mangled name -- we just need to make sure the name is unique.
+  llvm::SmallString<32> name;
+  llvm::raw_svector_ostream stream(name);
+  stream << "__swift_cxx_base_ctor";
+  LinkEntity::forSILFunction(f).mangle(IGM.Context, stream);
+  if (auto thunk = IGM.Module.getFunction(name))
+    return thunk;
+
+  // Use the base-object constructor: unlike the complete-object one, it never
+  // writes to the tail padding of the class, where the subclass may have
+  // already initialized its stored properties. The two differ otherwise only in
+  // their handling of virtual bases, which a subclassable foreign reference
+  // type does not have. Some ABIs only have the complete-object constructor.
+  auto ctorKind = IGM.getClangASTContext()
+                          .getTargetInfo()
+                          .getCXXABI()
+                          .hasConstructorVariants()
+                      ? clang::Ctor_Base
+                      : clang::Ctor_Complete;
+  auto ctorAddress =
+      IGM.getAddrOfClangGlobalDecl({ctor, ctorKind}, NotForDefinition);
+  auto ctorFnType = cast<llvm::FunctionType>(
+      cast<llvm::Function>(ctorAddress->stripPointerCasts())->getValueType());
+
+  Signature signature = IGM.getSignature(f->getLoweredFunctionType());
+  llvm::Function *thunk = llvm::Function::Create(
+      signature.getType(), llvm::Function::PrivateLinkage, name, &IGM.Module);
+  thunk->setCallingConv(signature.getCallingConv());
+
+  llvm::AttrBuilder attrBuilder(IGM.getLLVMContext());
+  IGM.constructInitialFnAttributes(attrBuilder);
+  attrBuilder.addAttribute(llvm::Attribute::AlwaysInline);
+  thunk->setAttributes(signature.getAttributes().addFnAttributes(
+      IGM.getLLVMContext(), attrBuilder));
+
+  IRGenFunction subIGF(IGM, thunk);
+  if (IGM.DebugInfo)
+    IGM.DebugInfo->emitArtificialFunction(subIGF, thunk);
+
+  // The thunk takes `this` followed by the constructor's arguments, which is
+  // how the constructor takes them as well.
+  ASSERT(thunk->arg_size() == ctorFnType->getNumParams() &&
+         "C++ constructor takes implicit arguments");
+  SmallVector<llvm::Value *, 8> args;
+  for (auto &arg : thunk->args()) {
+    auto paramTy = ctorFnType->getParamType(arg.getArgNo());
+    if (arg.getType() != paramTy)
+      args.push_back(subIGF.coerceValue(&arg, paramTy, IGM.DataLayout));
+    else
+      args.push_back(&arg);
+  }
+
+  auto call =
+      emitCXXConstructorCall(subIGF, ctor, ctorFnType, ctorAddress, args);
+  if (isa<llvm::InvokeInst>(call))
+    IGM.emittedForeignFunctionThunksWithExceptionTraps.insert(thunk);
+  subIGF.Builder.CreateRet(thunk->getArg(0));
+
+  return thunk;
+}
+
 // For a SILFunction to be legal in Embedded Swift, it must be either
 // - non-generic
 // - generic with parameters thar are either
@@ -3702,6 +3787,12 @@ llvm::Function *IRGenModule::getAddrOfSILFunction(
   PrettyStackTraceSILFunction entry("lowering address of", f);
   LinkEntity entity =
       LinkEntity::forSILFunction(f, shouldCallPreviousImplementation);
+
+  // The Clang declaration of a C++ foreign reference type's initializer is the
+  // static factory it was imported from, which is not the initializing entry
+  // point.
+  if (auto cxxCtor = getForeignReferenceInitializerConstructor(*this, f))
+    return emitForeignReferenceInitializerThunk(*this, f, cxxCtor);
 
   auto clangDecl = f->getClangDecl();
   auto cxxCtor = dyn_cast_or_null<clang::CXXConstructorDecl>(clangDecl);

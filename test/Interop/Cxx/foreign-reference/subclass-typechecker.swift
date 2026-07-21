@@ -22,6 +22,9 @@ final class SubOfFinal: FinalShared {} // expected-error {{inheritance from a fi
 final class SubOfPrivateDtor: PrivateDtorShared {} // expected-error {{cannot inherit from non-open class 'PrivateDtorShared' outside of its defining module}}
 final class SubOfDeletedDtor: DeletedDtorShared {} // expected-error {{cannot inherit from non-open class 'DeletedDtorShared' outside of its defining module}}
 final class SubOfProtectedDtor: ProtectedDtorShared {}
+final class SubOfMultiplyInherited: MultiplyInheritedShared {}
+final class SubOfVirtualBase: VirtualBaseShared {} // expected-error {{cannot inherit from non-open class 'VirtualBaseShared' outside of its defining module}}
+final class SubOfDerivedFromVirtualBase: DerivedFromVirtualBaseShared {} // expected-error {{cannot inherit from non-open class 'DerivedFromVirtualBaseShared' outside of its defining module}}
 
 final class WithMembers: SubclassableShared {
   var computed: Int { 0 }
@@ -198,4 +201,18 @@ final class FailableConvenienceInit: SharedConstructed {
     if !orThrow { throw InitError.bad }
     self.init(x: 2)
   }
+}
+
+// Only an initializer imported from a C++ constructor can construct the C++
+// base subobject.
+final class CallsFunctionInit: SharedWithFunctionInit {
+  init() { super.init(x: 1) } // expected-error {{cannot call 'init(x:)' with 'super.init' because it is not a constructor of 'SharedWithFunctionInit'}}
+}
+
+extension SharedConstructed {
+  convenience init(twice x: Int32) { self.init(x * 2) } // expected-note {{'init(twice:)' declared here}}
+}
+
+final class CallsConvenienceInit: SharedConstructed {
+  init() { super.init(twice: 1) } // expected-error {{cannot call 'init(twice:)' with 'super.init' because it is not a constructor of 'SharedConstructed'}}
 }

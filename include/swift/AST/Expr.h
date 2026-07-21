@@ -5648,8 +5648,6 @@ public:
   Expr *getSubExpr() const { return SubExpr; }
   void setSubExpr(Expr *Sub) { SubExpr = Sub; }
 
-  ApplyExpr *getConstructorCall() const;
-
   OtherConstructorDeclRefExpr *getCalledConstructor(bool &isChainToSuper) const;
   
   static bool classof(const Expr *E) {

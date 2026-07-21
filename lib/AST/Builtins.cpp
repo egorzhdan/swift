@@ -2052,9 +2052,9 @@ static ValueDecl *getFixLifetimeOperation(ASTContext &C, Identifier Id) {
 }
 
 static ValueDecl *
-getInitializeForeignReferenceSubclassOperation(ASTContext &C, Identifier Id) {
+getInitializeForeignReferenceSubclassVTablesOperation(ASTContext &C,
+                                                      Identifier Id) {
   // <T> T -> ()
-  // constructs the base subobject of the self value
   BuiltinFunctionBuilder builder(C);
   auto genericParam = makeGenericParam(0);
   builder.addParameter(genericParam);
@@ -3531,8 +3531,8 @@ ValueDecl *swift::getBuiltinValueDecl(ASTContext &Context, Identifier Id) {
   case BuiltinValueKind::FixLifetime:
     return getFixLifetimeOperation(Context, Id);
 
-  case BuiltinValueKind::InitializeForeignReferenceSubclass:
-    return getInitializeForeignReferenceSubclassOperation(Context, Id);
+  case BuiltinValueKind::InitializeForeignReferenceSubclassVTables:
+    return getInitializeForeignReferenceSubclassVTablesOperation(Context, Id);
 
   case BuiltinValueKind::MarkDependence:
     return getMarkDependenceOperation(Context, Id);

@@ -20,22 +20,32 @@ public final class DefaultSub: SubclassableShared {
 // base subobject is still uninitialized when the initializer body starts.
 // CHECK-LABEL: sil{{.*}} @$s{{.*}}8FieldSubC1x1aACs5Int64V_s5Int32VtcfC
 // CHECK:         alloc_ref $FieldSub
-// CHECK-NOT:     builtin "initializeForeignReferenceSubclass"
+// CHECK-NOT:     builtin "initializeForeignReferenceSubclassVTables"
 // CHECK:         return
 
-// The initializer body stores the Swift stored property first, then constructs
-// the base subobject, forwarding the `super.init` argument to it.
+// The initializer body stores the Swift stored property first, then calls the
+// initializing entry point of the C++ constructor, which constructs the base
+// subobject of `self` in place and returns `self`, and then points the
+// v-tables of `self` at the v-tables of the subclass. The entry point only
+// borrows `self`. The C++ constructor initializes the reference count, so it
+// returns `self` with the ownership that the constructor's factory returns a
+// new object with: here +1. The original `self` was not backed by a reference
+// count, so its lifetime just ends, and the returned one is stored back.
 // CHECK-LABEL: sil{{.*}} @$s{{.*}}8FieldSubC1x1aACs5Int64V_s5Int32Vtcfc
 // CHECK:         ref_element_addr {{.*}} #FieldSub.x
 // CHECK:         [[SELF:%.*]] = load [take]
 // CHECK:         [[SUPER:%.*]] = upcast [[SELF]] to $SharedConstructed
-// CHECK:         [[CTOR:%.*]] = function_ref @$sSo17SharedConstructedVyABs5Int32VcfCTo : $@convention(c) (Int32) -> @owned SharedConstructed
-// CHECK:         [[BORROW:%.*]] = begin_borrow [[SUPER]]
-// CHECK:         [[SUB:%.*]] = unchecked_ref_cast [[BORROW]] to $FieldSub
-// CHECK:         builtin "initializeForeignReferenceSubclass"<FieldSub>([[SUB]], [[CTOR]], {{%[0-9]+}}) : $()
-// CHECK:         end_borrow [[BORROW]]
-// CHECK:         [[NEWSUB:%.*]] = unchecked_ref_cast [[SUPER]] to $FieldSub
-// CHECK:         store [[NEWSUB]] to [init]
+// CHECK:         [[CTOR:%.*]] = function_ref @$sSo17SharedConstructedVyABs5Int32VcfcTo : $@convention(cxx_method) (Int32, @guaranteed SharedConstructed) -> @owned SharedConstructed
+// CHECK-NOT:     begin_borrow [[SUPER]]
+// CHECK:         [[NEWSUPER:%.*]] = apply [[CTOR]](%1, [[SUPER]])
+// CHECK-NEXT:    end_lifetime [[SUPER]]
+// CHECK-NEXT:    [[NEWSUB:%.*]] = unchecked_ref_cast [[NEWSUPER]] to $FieldSub
+// CHECK-NEXT:    builtin "initializeForeignReferenceSubclassVTables"<FieldSub>([[NEWSUB]]) : $()
+// CHECK-NEXT:    store [[NEWSUB]] to [init]
+
+// The initializing entry point has no symbol of its own yet: it must not use
+// the symbol of the static factory that the initializer was imported from.
+// CHECK:       sil [available 13.3.0] [clang SharedConstructed.init] @$sSo17SharedConstructedVyABs5Int32VcfcTo : $@convention(cxx_method) (Int32, @guaranteed SharedConstructed) -> @owned SharedConstructed
 
 // The destroying destructor does not chain to the C++ base's destructor: the
 // imported foreign reference type has no Swift deinit, and uses the release
@@ -45,18 +55,21 @@ public final class DefaultSub: SubclassableShared {
 // CHECK:         unchecked_ref_cast
 // CHECK:         return
 
-// A synthesized default initializer gets the same treatment.
+// A synthesized default initializer gets the same treatment. The constructor
+// of `SubclassableShared` is not annotated, so like its factory, it returns
+// `self` at +0.
 // CHECK-LABEL: sil{{.*}} @$s{{.*}}10DefaultSubCACycfc
 // CHECK:         ref_element_addr {{.*}} #DefaultSub.y
 // CHECK:         [[DSELF:%.*]] = load [take]
 // CHECK:         [[DSUPER:%.*]] = upcast [[DSELF]] to $SubclassableShared
-// CHECK:         [[DCTOR:%.*]] = function_ref @$sSo18SubclassableSharedVABycfCTo : $@convention(c) () -> SubclassableShared
-// CHECK:         [[DBORROW:%.*]] = begin_borrow [[DSUPER]]
-// CHECK:         [[DSUB:%.*]] = unchecked_ref_cast [[DBORROW]] to $DefaultSub
-// CHECK:         builtin "initializeForeignReferenceSubclass"<DefaultSub>([[DSUB]], [[DCTOR]]) : $()
-// CHECK:         end_borrow [[DBORROW]]
-// CHECK:         [[DNEWSUB:%.*]] = unchecked_ref_cast [[DSUPER]] to $DefaultSub
-// CHECK:         store [[DNEWSUB]] to [init]
+// CHECK:         [[DCTOR:%.*]] = function_ref @$sSo18SubclassableSharedVABycfcTo : $@convention(cxx_method) (@guaranteed SubclassableShared) -> SubclassableShared
+// CHECK-NOT:     begin_borrow [[DSUPER]]
+// CHECK:         [[DNEWSUPER:%.*]] = apply [[DCTOR]]([[DSUPER]])
+// CHECK-NEXT:    end_lifetime [[DSUPER]]
+// CHECK-NEXT:    [[DNEWSUB:%.*]] = unchecked_ref_cast [[DNEWSUPER]] to $DefaultSub
+// CHECK-NEXT:    builtin "initializeForeignReferenceSubclassVTables"<DefaultSub>([[DNEWSUB]]) : $()
+// CHECK-NOT:     end_borrow
+// CHECK-NEXT:    store [[DNEWSUB]] to [init]
 
 // The `super.init` arguments may read stored properties of `self`.
 public final class PassesOwnField: SharedConstructed {
@@ -75,11 +88,12 @@ public final class PassesOwnField: SharedConstructed {
 // CHECK:         [[XADDR:%.*]] = ref_element_addr [[BORROWSUB]], #PassesOwnField.x
 // CHECK:         [[X:%.*]] = load [trivial] [[XADDR]]
 // CHECK:         end_borrow [[BORROW]]
-// CHECK:         [[CTOR:%.*]] = function_ref @$sSo17SharedConstructedVyABs5Int32VcfCTo
-// CHECK:         [[BORROW2:%.*]] = begin_borrow [[SUPER]]
-// CHECK:         [[SUB:%.*]] = unchecked_ref_cast [[BORROW2]] to $PassesOwnField
-// CHECK:         builtin "initializeForeignReferenceSubclass"<PassesOwnField>([[SUB]], [[CTOR]], [[X]]) : $()
-// CHECK:         store {{%.*}} to [init]
+// CHECK:         [[CTOR:%.*]] = function_ref @$sSo17SharedConstructedVyABs5Int32VcfcTo
+// CHECK-NOT:     begin_borrow [[SUPER]]
+// CHECK:         [[NEWSUPER:%.*]] = apply [[CTOR]]([[X]], [[SUPER]])
+// CHECK:         [[SUB:%.*]] = unchecked_ref_cast [[NEWSUPER]] to $PassesOwnField
+// CHECK:         builtin "initializeForeignReferenceSubclassVTables"<PassesOwnField>([[SUB]]) : $()
+// CHECK:         store [[SUB]] to [init]
 
 public final class ConstRefArgSub: ReferenceConstructed {
   public let t: Int64 = 1
@@ -88,9 +102,10 @@ public final class ConstRefArgSub: ReferenceConstructed {
 // CHECK-LABEL: sil{{.*}} @$s{{.*}}14ConstRefArgSubCyACs5Int32Vcfc
 // CHECK:         [[TEMP:%.*]] = alloc_stack $Int32
 // CHECK:         [[ARG:%.*]] = store_borrow %0 to [[TEMP]]
-// CHECK:         [[CTOR:%.*]] = function_ref @$sSo20ReferenceConstructedVyABs5Int32VcfCTo : $@convention(c) (@in_guaranteed Int32) -> @owned ReferenceConstructed
-// CHECK:         [[SUB:%.*]] = unchecked_ref_cast {{%.*}} to $ConstRefArgSub
-// CHECK:         builtin "initializeForeignReferenceSubclass"<ConstRefArgSub>([[SUB]], [[CTOR]], [[ARG]]) : $()
+// CHECK:         [[CTOR:%.*]] = function_ref @$sSo20ReferenceConstructedVyABs5Int32VcfcTo : $@convention(cxx_method) (@in_guaranteed Int32, @guaranteed ReferenceConstructed) -> @owned ReferenceConstructed
+// CHECK:         [[NEWSUPER:%.*]] = apply [[CTOR]]([[ARG]], {{%.*}})
+// CHECK:         [[SUB:%.*]] = unchecked_ref_cast [[NEWSUPER]] to $ConstRefArgSub
+// CHECK:         builtin "initializeForeignReferenceSubclassVTables"<ConstRefArgSub>([[SUB]]) : $()
 // CHECK:         dealloc_stack [[TEMP]]
 
 public final class InoutArgSub: ReferenceConstructed {
@@ -99,9 +114,9 @@ public final class InoutArgSub: ReferenceConstructed {
 }
 // CHECK-LABEL: sil{{.*}} @$s{{.*}}11InoutArgSubCyACs5Int32Vzcfc
 // CHECK:         [[ACCESS:%.*]] = begin_access [modify] [unknown] %0
-// CHECK:         [[CTOR:%.*]] = function_ref @$sSo20ReferenceConstructedVyABs5Int32Vz_ADtcfCTo : $@convention(c) (@inout Int32, Int32) -> @owned ReferenceConstructed
-// CHECK:         builtin "initializeForeignReferenceSubclass"<InoutArgSub>({{%.*}}, [[CTOR]], [[ACCESS]], {{%.*}}) : $()
-// CHECK:         end_access [[ACCESS]]
+// CHECK:         [[CTOR:%.*]] = function_ref @$sSo20ReferenceConstructedVyABs5Int32Vz_ADtcfcTo : $@convention(cxx_method) (@inout Int32, Int32, @guaranteed ReferenceConstructed) -> @owned ReferenceConstructed
+// CHECK:         apply [[CTOR]]([[ACCESS]], {{%.*}}, {{%.*}})
+// CHECK-NEXT:    end_access [[ACCESS]]
 
 public final class ByValueArgSub: ReferenceConstructed {
   public let t: Int64 = 1
@@ -110,11 +125,12 @@ public final class ByValueArgSub: ReferenceConstructed {
 // CHECK-LABEL: sil{{.*}} @$s{{.*}}13ByValueArgSubCyACSo010NonTrivialD0Vcfc
 // CHECK:         [[TEMP:%.*]] = alloc_stack $NonTrivialArg
 // CHECK:         copy_addr %0 to [init] [[TEMP]]
-// CHECK:         [[CTOR:%.*]] = function_ref @$sSo20ReferenceConstructedVyABSo13NonTrivialArgV_SitcfCTo : $@convention(c) (@in_cxx NonTrivialArg, Int) -> @owned ReferenceConstructed
-// CHECK:         builtin "initializeForeignReferenceSubclass"<ByValueArgSub>({{%.*}}, [[CTOR]], [[TEMP]], {{%.*}}) : $()
-// CHECK-NEXT:    end_borrow
-// CHECK-NEXT:    destroy_addr [[TEMP]]
+// CHECK:         [[CTOR:%.*]] = function_ref @$sSo20ReferenceConstructedVyABSo13NonTrivialArgV_SitcfcTo : $@convention(cxx_method) (@in_cxx NonTrivialArg, Int, @guaranteed ReferenceConstructed) -> @owned ReferenceConstructed
+// CHECK:         [[NEWSUPER:%.*]] = apply [[CTOR]]([[TEMP]], {{%.*}}, {{%.*}})
+// CHECK-NOT:     end_borrow
 // CHECK-NEXT:    dealloc_stack [[TEMP]]
+// CHECK-NEXT:    end_lifetime
+// CHECK-NEXT:    unchecked_ref_cast [[NEWSUPER]] to $ByValueArgSub
 
 public final class SelfNonTrivialArgSub: ReferenceConstructed {
   public let arg: NonTrivialArg
@@ -126,25 +142,51 @@ public final class SelfNonTrivialArgSub: ReferenceConstructed {
 // CHECK-LABEL: sil{{.*}} @$s{{.*}}20SelfNonTrivialArgSubCyACSo0cdE0Vcfc
 // CHECK:         [[SELF:%.*]] = load [take]
 // CHECK:         [[SUPER:%.*]] = upcast [[SELF]] to $ReferenceConstructed
+// The stored property is passed to the C++ reference parameter in place, so
+// that a reference the base keeps stays valid. This is possible because the
+// call only borrows `self`, and the lifetime of the original `self` ends once
+// the call is done.
 // CHECK:         [[BORROW:%.*]] = begin_borrow [[SUPER]]
 // CHECK:         [[ARGADDR:%.*]] = ref_element_addr {{%.*}}, #SelfNonTrivialArgSub.arg
 // CHECK-NOT:     alloc_stack $NonTrivialArg
 // CHECK-NOT:     copy_addr
 // CHECK-NOT:     end_borrow [[BORROW]]
-// CHECK:         [[CTOR:%.*]] = function_ref @$sSo20ReferenceConstructedVyABSo13NonTrivialArgV_s4Int8VtcfCTo : $@convention(c) (@in_guaranteed NonTrivialArg, Int8) -> @owned ReferenceConstructed
-// CHECK:         [[BORROW2:%.*]] = begin_borrow [[SUPER]]
-// CHECK:         [[SUB:%.*]] = unchecked_ref_cast [[BORROW2]] to $SelfNonTrivialArgSub
-// CHECK:         builtin "initializeForeignReferenceSubclass"<SelfNonTrivialArgSub>([[SUB]], [[CTOR]], [[ARGADDR]], {{%.*}}) : $()
-// CHECK-NEXT:    end_borrow [[BORROW2]]
+// CHECK:         [[CTOR:%.*]] = function_ref @$sSo20ReferenceConstructedVyABSo13NonTrivialArgV_s4Int8VtcfcTo : $@convention(cxx_method) (@in_guaranteed NonTrivialArg, Int8, @guaranteed ReferenceConstructed) -> @owned ReferenceConstructed
+// CHECK-NOT:     begin_borrow [[SUPER]]
+// CHECK:         [[NEWSUPER:%.*]] = apply [[CTOR]]([[ARGADDR]], {{%.*}}, [[SUPER]])
 // CHECK-NEXT:    end_borrow [[BORROW]]
+// CHECK-NEXT:    end_lifetime [[SUPER]]
+// CHECK-NEXT:    [[SUB:%.*]] = unchecked_ref_cast [[NEWSUPER]] to $SelfNonTrivialArgSub
+// CHECK-NEXT:    builtin "initializeForeignReferenceSubclassVTables"<SelfNonTrivialArgSub>([[SUB]]) : $()
+
+public final class ArgHolder {
+  public let arg: NonTrivialArg
+  public init(arg: NonTrivialArg) { self.arg = arg }
+}
+
+// A stored property of another object is passed in place as well.
+public final class OtherNonTrivialArgSub: ReferenceConstructed {
+  public let t: Int64 = 1
+  public init(_ holder: ArgHolder) {
+    super.init(holder.arg, CChar(0))
+  }
+}
+// CHECK-LABEL: sil{{.*}} @$s{{.*}}21OtherNonTrivialArgSubCyAcA0E6HolderCcfc
+// CHECK:         [[SUPER:%.*]] = upcast {{%.*}} to $ReferenceConstructed
+// CHECK:         [[HOLDER:%.*]] = begin_borrow %0
+// CHECK:         [[ARGADDR:%.*]] = ref_element_addr [[HOLDER]], #ArgHolder.arg
+// CHECK-NOT:     alloc_stack $NonTrivialArg
+// CHECK-NOT:     copy_addr
+// CHECK:         [[CTOR:%.*]] = function_ref @$sSo20ReferenceConstructedVyABSo13NonTrivialArgV_s4Int8VtcfcTo
+// CHECK:         apply [[CTOR]]([[ARGADDR]], {{%.*}}, [[SUPER]])
 
 public final class PicksDoubleSub: OverloadedConstructed {
   public let t: Int64 = 1
   public init() { super.init(2.0) }
 }
 // CHECK-LABEL: sil{{.*}} @$s{{.*}}14PicksDoubleSubCACycfc
-// CHECK:         [[CTOR:%.*]] = function_ref @$sSo21OverloadedConstructedVyABSdcfCTo : $@convention(c) (Double) -> @owned OverloadedConstructed
-// CHECK:         builtin "initializeForeignReferenceSubclass"<PicksDoubleSub>({{%.*}}, [[CTOR]], {{%.*}}) : $()
+// CHECK:         [[CTOR:%.*]] = function_ref @$sSo21OverloadedConstructedVyABSdcfcTo : $@convention(cxx_method) (Double, @guaranteed OverloadedConstructed) -> @owned OverloadedConstructed
+// CHECK:         apply [[CTOR]]({{%.*}}, {{%.*}})
 
 // A `self.init` delegation to a C++ constructor, e.g. from a convenience
 // initializer in a Swift extension of the base, is an ordinary factory call.
@@ -154,9 +196,9 @@ extension SharedConstructed {
   }
 }
 // CHECK-LABEL: sil{{.*}} @$sSo17SharedConstructedV{{.*}}5twiceABs5Int32V_tcfC
-// CHECK-NOT:     builtin "initializeForeignReferenceSubclass"
+// CHECK-NOT:     builtin "initializeForeignReferenceSubclassVTables"
 // CHECK:         [[CTOR:%.*]] = function_ref @$sSo17SharedConstructedVyABs5Int32VcfCTo : $@convention(c) (Int32) -> @owned SharedConstructed
-// CHECK-NOT:     builtin "initializeForeignReferenceSubclass"
+// CHECK-NOT:     builtin "initializeForeignReferenceSubclassVTables"
 // CHECK:         apply [[CTOR]]
-// CHECK-NOT:     builtin "initializeForeignReferenceSubclass"
+// CHECK-NOT:     builtin "initializeForeignReferenceSubclassVTables"
 // CHECK:         return

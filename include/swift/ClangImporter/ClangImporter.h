@@ -431,6 +431,24 @@ public:
   instantiateCXXClassTemplate(clang::ClassTemplateDecl *decl,
                       ArrayRef<clang::TemplateArgument> arguments) override;
 
+  /// Instantiate `__SwiftSubclassShim<Base, Size, Align, DestroyFields>`
+  /// which provides the backing storage for a Swift class which subclasses the
+  /// C++ foreign reference type \p base and adds \p swiftFieldsSize bytes of
+  /// stored properties, aligned to \p swiftFieldsAlign.
+  ///
+  /// The shim's virtual destructor calls \p destroyFields
+  /// (passing the object pointer) to destroy the Swift stored properties.
+  const clang::CXXRecordDecl *instantiateForeignReferenceSubclassShim(
+      ClassDecl *base, uint64_t swiftFieldsSize, uint64_t swiftFieldsAlign,
+      const clang::FunctionDecl *destroySwiftFields = nullptr);
+
+  /// Get or create a Clang function, to be used as the `DestroyFields` callback
+  /// of a subclass shim.
+  ///
+  /// The definition is emitted later by IRGen.
+  clang::FunctionDecl *
+  getForeignReferenceSubclassDestroyFieldsThunk(StringRef name);
+
   ConcreteDeclRef getCXXFunctionTemplateSpecialization(
           SubstitutionMap subst, ValueDecl *decl) override;
 
@@ -823,6 +841,8 @@ public:
   ValueDecl *getOriginalForClonedMember(const ValueDecl *decl) override;
 
   FuncDecl *getOriginalForVirtualThunk(const FuncDecl *decl) override;
+  const clang::CXXConstructorDecl *
+  getForeignReferenceConstructor(const ConstructorDecl *ctor) override;
   ValueDecl *getOverriddenSuperclassMember(const ValueDecl *decl) override;
   ValueDecl *getForwardingSource(const ValueDecl *decl) override;
   ValueDecl *getCalledBaseCxxMethod(const ValueDecl *decl) override;

@@ -26,6 +26,7 @@
 #include "swift/AST/ASTVisitor.h"
 #include "swift/AST/ASTWalker.h"
 #include "swift/AST/Attr.h"
+#include "swift/AST/ClangModuleLoader.h"
 #include "swift/AST/ConformanceLookup.h"
 #include "swift/AST/DiagnosticSuppression.h"
 #include "swift/AST/DiagnosticsSema.h"
@@ -2617,17 +2618,26 @@ static bool checkSuperInit(ConstructorDecl *fromCtor,
       auto &ctx = fromCtor->getASTContext();
       if (ctx.LangOpts.hasFeature(Feature::ForeignReferenceTypeSubclassing) &&
           classDecl->isForeignReferenceType()) {
-        if (!importer::isUserProvidedForeignReferenceFactory(ctor))
+        // Only a C++ constructor can construct the base subobject of this
+        // object.
+        if (ctx.getClangModuleLoader()->getForeignReferenceConstructor(ctor))
           return false;
 
-        // A static factory method allocates a new object, so it cannot
-        // construct the base subobject of this one.
         auto loc = implicitlyGenerated ? fromCtor->getLoc()
                                        : apply->getArgs()->getLoc();
-        ctx.Diags.diagnose(loc, diag::chain_foreign_reference_factory_init,
-                           implicitlyGenerated, ctor,
-                           classDecl->getDeclaredInterfaceType());
-        ctor->diagnose(diag::foreign_reference_factory_init_here, ctor);
+        if (importer::isUserProvidedForeignReferenceFactory(ctor)) {
+          // A static factory method allocates a new object.
+          ctx.Diags.diagnose(loc, diag::chain_foreign_reference_factory_init,
+                             implicitlyGenerated, ctor,
+                             classDecl->getDeclaredInterfaceType());
+          ctor->diagnose(diag::foreign_reference_factory_init_here, ctor);
+        } else {
+          ctx.Diags.diagnose(loc,
+                             diag::chain_foreign_reference_non_constructor_init,
+                             implicitlyGenerated, ctor,
+                             classDecl->getDeclaredInterfaceType());
+          ctor->diagnose(diag::decl_declared_here, ctor);
+        }
         return true;
       }
     }

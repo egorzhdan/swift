@@ -1916,9 +1916,10 @@ RebindSelfInConstructorExpr::RebindSelfInConstructorExpr(Expr *SubExpr,
     SubExpr(SubExpr), Self(Self)
 {}
 
-ApplyExpr *RebindSelfInConstructorExpr::getConstructorCall() const {
-  // Dig out the constructor application. Note that this is the reverse of what
-  // we do in pre-checking.
+OtherConstructorDeclRefExpr *
+RebindSelfInConstructorExpr::getCalledConstructor(bool &isChainToSuper) const {
+  // Dig out the OtherConstructorDeclRefExpr. Note that this is the reverse
+  // of what we do in pre-checking.
   Expr *candidate = getSubExpr();
   while (true) {
     // Look through identity expressions.
@@ -1962,13 +1963,7 @@ ApplyExpr *RebindSelfInConstructorExpr::getConstructorCall() const {
     break;
   }
 
-  return cast<ApplyExpr>(candidate);
-}
-
-OtherConstructorDeclRefExpr *
-RebindSelfInConstructorExpr::getCalledConstructor(bool &isChainToSuper) const {
-  // Starting from the constructor application, find the constructor reference.
-  Expr *candidate = getConstructorCall();
+  // We hit an application, find the constructor reference.
   OtherConstructorDeclRefExpr *otherCtorRef;
   const ApplyExpr *apply;
   do {

@@ -527,6 +527,12 @@ struct SILDeclRef {
   /// True if the decl ref references a thunk handling potentially distributed actor functions
   bool isDistributedThunk() const;
 
+  /// True if the decl ref references the initializing entry point of a
+  /// constructor of a C++ foreign reference type: the C++ constructor applied
+  /// to storage that is already allocated, as the `super.init` of a Swift
+  /// subclass.
+  bool isForeignReferenceInitializer() const;
+
   /// If this is a distributed-thunk decl ref, return its distributed thunk.
   FuncDecl *getDistributedThunk() const;
 
