@@ -11,6 +11,10 @@ _Pragma("clang assume_nonnull begin")
 
 struct SubclassableShared {
   int refcount = 1;
+  int payload = 0;
+
+  int get() const { return payload; }
+  void set(int x) { payload = x; }
 
   virtual ~SubclassableShared() {}
 } SWIFT_SHARED_REFERENCE(retainSubclassableShared, releaseSubclassableShared);
@@ -22,6 +26,18 @@ inline void releaseSubclassableShared(SubclassableShared *t) {
 }
 
 struct DerivedSubclassableShared : SubclassableShared {};
+
+struct DerivedOwnRefcountShared : SubclassableShared {
+} SWIFT_SHARED_REFERENCE(retainDerivedOwnRefcountShared,
+                         releaseDerivedOwnRefcountShared);
+
+inline void retainDerivedOwnRefcountShared(DerivedOwnRefcountShared *t) {
+  ++t->refcount;
+}
+inline void releaseDerivedOwnRefcountShared(DerivedOwnRefcountShared *t) {
+  if (--t->refcount <= 0)
+    delete t;
+}
 
 struct NonVirtualShared {
   int refcount = 1;
