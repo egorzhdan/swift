@@ -4811,12 +4811,12 @@ ReferenceCounting TypeBase::getReferenceCounting() {
   CanType type = getCanonicalType();
   ASTContext &ctx = type->getASTContext();
 
-  if (isForeignReferenceType())
-    return lookThroughAllOptionalTypes()
-                   ->getClassOrBoundGenericClass()
-                   ->hasRefCountingAnnotations()
-               ? ReferenceCounting::Custom
-               : ReferenceCounting::None;
+  if (auto classDecl =
+          lookThroughAllOptionalTypes()->getClassOrBoundGenericClass()) {
+    if (auto frtBase = classDecl->getForeignReferenceSuperclass())
+      return frtBase->hasRefCountingAnnotations() ? ReferenceCounting::Custom
+                                                  : ReferenceCounting::None;
+  }
 
   // In the absence of Objective-C interoperability, everything uses native
   // reference counting or is the builtin BridgeObject.

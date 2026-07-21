@@ -352,6 +352,42 @@ public:
   instantiateCXXClassTemplate(clang::ClassTemplateDecl *decl,
                       ArrayRef<clang::TemplateArgument> arguments) override;
 
+  /// Instantiate the `__SwiftSubclassShim<Base, Size, Align, DestroyFields>`
+  /// C++ class template (from the CxxShim module) that provides the backing
+  /// storage for a Swift class which subclasses the C++ foreign reference type
+  /// \p base and adds \p addedFieldsSize bytes of stored properties, aligned to
+  /// \p addedFieldsAlign. The shim's virtual destructor calls \p destroyFields
+  /// (passing the object pointer) to destroy the Swift stored properties; if
+  /// null, a no-op is used (correct only for trivially-destructible fields).
+  /// Returns the instantiated clang record (whose static
+  /// `__swift_allocate`/`__swift_constructBase` members IRGen references), or
+  /// null if it could not be instantiated.
+  const clang::CXXRecordDecl *
+  instantiateForeignReferenceSubclassShim(
+      ClassDecl *base, uint64_t addedFieldsSize, uint64_t addedFieldsAlign,
+      const clang::FunctionDecl *destroyFields = nullptr);
+
+  /// Get (creating on first use) an `extern "C++" void(void *)` clang function
+  /// declaration named \p name, to be used as the `DestroyFields` callback of a
+  /// subclass shim. The definition is emitted by IRGen (which destroys the
+  /// Swift stored properties); this only provides a declaration whose mangled
+  /// symbol both the shim's destructor and the IRGen-emitted definition agree
+  /// on.
+  clang::FunctionDecl *
+  getForeignReferenceSubclassDestroyFieldsThunk(StringRef name);
+
+  /// Instantiate the templated `__swift_constructBase` member of the subclass
+  /// shim for \p base (see `instantiateForeignReferenceSubclassShim`) that
+  /// forwards the given constructor argument types \p argTypes to a C++ base
+  /// constructor. Returns the instantiated clang function (which IRGen calls to
+  /// construct the base subobject in place with arguments), or null. \p argTypes
+  /// must be non-empty; the zero-argument case uses the shim's non-templated
+  /// `__swift_constructBase` overload instead.
+  const clang::FunctionDecl *
+  instantiateForeignReferenceSubclassBaseConstructor(
+      ClassDecl *base, uint64_t addedFieldsSize, uint64_t addedFieldsAlign,
+      ArrayRef<clang::QualType> argTypes);
+
   ConcreteDeclRef getCXXFunctionTemplateSpecialization(
           SubstitutionMap subst, ValueDecl *decl) override;
 

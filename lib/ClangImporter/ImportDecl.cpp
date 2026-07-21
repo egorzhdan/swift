@@ -2993,6 +2993,21 @@ namespace {
         if (cxxRecordDecl && cxxRecordDecl->isEffectivelyFinal())
           classDecl->addAttribute(new (Impl.SwiftContext)
                                       FinalAttr(/*IsImplicit=*/true));
+        // A C++ foreign reference type can be subclassed from Swift only if it
+        // has a virtual destructor: deleting a Swift subclass through a base
+        // pointer must run the most-derived destructor. Mark such a type `open`
+        // so it is subclassable, and rely on the standard "cannot inherit from
+        // non-open class" check to reject subclassing the others. (We do not
+        // mark the non-subclassable ones `final`, which would be confusing in
+        // the module interface since C++ types may still inherit from them.)
+        // Gated on the experimental feature so plain foreign reference types
+        // are unaffected when off.
+        else if (Impl.SwiftContext.LangOpts.hasFeature(
+                     Feature::ForeignReferenceTypeSubclassing)) {
+          if (cxxRecordDecl && cxxRecordDecl->getDestructor() &&
+              cxxRecordDecl->getDestructor()->isVirtual())
+            classDecl->overwriteAccess(AccessLevel::Open);
+        }
       }
 
       // If we need it, add an explicit "deinit" to this type.

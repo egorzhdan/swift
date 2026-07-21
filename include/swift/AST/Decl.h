@@ -5720,6 +5720,11 @@ public:
   /// record.
   bool isForeignReferenceType() const;
 
+  /// If this class is a C++ foreign reference type, or a Swift class that
+  /// (transitively) inherits from one, returns the foreign reference type in
+  /// its hierarchy (which may be this class). Otherwise returns null.
+  ClassDecl *getForeignReferenceSuperclass() const;
+
   bool hasRefCountingAnnotations() const;
 };
 

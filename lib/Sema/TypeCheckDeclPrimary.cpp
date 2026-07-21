@@ -3581,6 +3581,25 @@ public:
           Super->diagnose(diag::superclass_here);
         }
       }
+
+      // A Swift class that subclasses a C++ foreign reference type has no Swift
+      // type metadata, and therefore no vtable: its members cannot be
+      // dynamically dispatched. Require each overridable member to be 'final'
+      // so that a dynamically-dispatched call can't crash at runtime. Recover
+      // by marking the member 'final' implicitly.
+      if (Ctx.LangOpts.hasFeature(Feature::ForeignReferenceTypeSubclassing) &&
+          CD->getForeignReferenceSuperclass()) {
+        for (auto *member : CD->getMembers()) {
+          auto vd = dyn_cast<ValueDecl>(member);
+          if (!vd || isa<DestructorDecl>(vd) ||
+              !vd->isSyntacticallyOverridable())
+            continue;
+          vd->diagnose(diag::foreign_reference_subclass_member_must_be_final, vd)
+              .fixItInsert(vd->getAttributeInsertionLoc(/*forModifier=*/true),
+                           "final ");
+          vd->addAttribute(new (Ctx) FinalAttr(/*IsImplicit=*/true));
+        }
+      }
     }
 
     checkInheritanceClause(CD);

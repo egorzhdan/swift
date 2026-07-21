@@ -2575,6 +2575,15 @@ static bool checkSuperInit(ConstructorDecl *fromCtor,
   
   auto ctor = otherCtorRef->getDecl();
   if (!ctor->isDesignatedInit()) {
+    // A Swift class that subclasses a C++ foreign reference type establishes
+    // `self` by calling the base's imported factory (a convenience factory);
+    // there is no designated initializer to chain to. Allow it.
+    if (auto classDecl = ctor->getDeclContext()->getSelfClassDecl()) {
+      auto &ctx = fromCtor->getASTContext();
+      if (ctx.LangOpts.hasFeature(Feature::ForeignReferenceTypeSubclassing) &&
+          classDecl->isForeignReferenceType())
+        return false;
+    }
     if (!implicitlyGenerated) {
       auto selfTy = fromCtor->getDeclContext()->getSelfInterfaceType();
       if (auto classTy = selfTy->getClassOrBoundGenericClass()) {

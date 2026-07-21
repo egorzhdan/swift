@@ -30,6 +30,7 @@
 #include "Explosion.h"
 #include "GenCall.h"
 #include "GenCast.h"
+#include "GenClass.h"
 #include "GenConcurrency.h"
 #include "GenDistributed.h"
 #include "GenEnum.h"
@@ -209,6 +210,20 @@ void irgen::emitBuiltinCall(IRGenFunction &IGF, const BuiltinInfo &Builtin,
   case BuiltinValueKind::OnFastPath: {
     // The onFastPath builtin has only an effect on SIL level, so we lower it
     // to a no-op.
+    return;
+  }
+
+  case BuiltinValueKind::InitializeForeignReferenceSubclass: {
+    // Construct the C++ base subobject of a foreign reference subclass into its
+    // already-allocated storage (emitted for `super.init`), forwarding any
+    // `super.init` arguments to the base constructor, then forward `self`.
+    auto self = args.claimNext();
+    SmallVector<llvm::Value *, 4> ctorArgs;
+    while (!args.empty())
+      ctorArgs.push_back(args.claimNext());
+    emitForeignReferenceSubclassBaseConstruction(IGF, argTypes[0], self,
+                                                 ctorArgs);
+    out.add(self);
     return;
   }
 

@@ -166,6 +166,15 @@ namespace irgen {
   llvm::Value *emitClassAllocation(IRGenFunction &IGF, SILType selfType,
                   bool objc, bool isBare, int &StackAllocSize, TailArraysRef TailArrays);
 
+  /// Construct the C++ base subobject of a Swift class that subclasses a C++
+  /// foreign reference type, into the already-allocated storage \p self,
+  /// forwarding \p ctorArgs to the base constructor (empty for the no-argument
+  /// base constructor). Used to lower the `initializeForeignReferenceSubclass`
+  /// builtin (emitted for `super.init`).
+  void emitForeignReferenceSubclassBaseConstruction(
+      IRGenFunction &IGF, SILType selfType, llvm::Value *self,
+      ArrayRef<llvm::Value *> ctorArgs);
+
   /// Emit an allocation of a class using a metadata value.
   llvm::Value *emitClassAllocationDynamic(IRGenFunction &IGF,
                                           llvm::Value *metadata,

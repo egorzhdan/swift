@@ -5641,6 +5641,11 @@ public:
   Expr *getSubExpr() const { return SubExpr; }
   void setSubExpr(Expr *Sub) { SubExpr = Sub; }
 
+  /// The delegated/chained constructor application, i.e. the `self.init(...)`
+  /// or `super.init(...)` call (looking through the conversions that may wrap
+  /// it). Its argument list holds the constructor arguments.
+  ApplyExpr *getConstructorCall() const;
+
   OtherConstructorDeclRefExpr *getCalledConstructor(bool &isChainToSuper) const;
   
   static bool classof(const Expr *E) {

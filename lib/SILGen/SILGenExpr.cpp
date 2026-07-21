@@ -5527,6 +5527,53 @@ RValue RValueEmitter::visitRebindSelfInConstructorExpr(
   auto *otherCtor = E->getCalledConstructor(isChaining)->getDecl();
   assert(otherCtor);
 
+  // A Swift class that subclasses a C++ foreign reference type has already had
+  // its storage allocated by the class allocator (which routes to the subclass
+  // shim). `super.init` constructs the C++ base subobject in place. Emit it as
+  // the `initializeForeignReferenceSubclass` builtin located at the super.init
+  // expression, so definite initialization recognizes it as the super-init;
+  // IRGen lowers the builtin to the shim's base constructor.
+  if (auto superClass = otherCtor->getDeclContext()->getSelfClassDecl()) {
+    if (superClass->isForeignReferenceType()) {
+      auto &ctx = SGF.getASTContext();
+
+      // Evaluate the base-constructor arguments (empty for the no-argument base
+      // constructor). The constructor call's outermost application is applied to
+      // these arguments; its callee is the (inner) application of `self`.
+      SmallVector<SILValue, 4> ctorArgs;
+      for (auto arg : *E->getConstructorCall()->getArgs())
+        ctorArgs.push_back(
+            SGF.emitRValueAsSingleValue(arg.getExpr()).forward(SGF));
+
+      SILValue selfAddr =
+          SGF.emitAddressOfLocalVarDecl(E, selfDecl, selfTy->getCanonicalType(),
+                                        SGFAccessKind::Write)
+              .getLValueAddress();
+      // Take `self` out of its box, construct the base subobject in place
+      // (forwarding any constructor arguments), and store the (forwarded)
+      // result back. The store-back of the builtin's result is what definite
+      // initialization records as the super-init (marking `self` initialized);
+      // the builtin performs the base construction and is lowered by IRGen.
+      SILValue selfValue =
+          SGF.B.createLoad(E, selfAddr, LoadOwnershipQualifier::Take);
+      auto builtinName =
+          getBuiltinName(BuiltinValueKind::InitializeForeignReferenceSubclass);
+      auto *builtinDecl = cast<FuncDecl>(
+          getBuiltinValueDecl(ctx, ctx.getIdentifier(builtinName)));
+      auto subs = SubstitutionMap::get(builtinDecl->getGenericSignature(),
+                                       {selfTy},
+                                       ArrayRef<ProtocolConformanceRef>{});
+      SmallVector<SILValue, 4> builtinArgs;
+      builtinArgs.push_back(selfValue);
+      builtinArgs.append(ctorArgs.begin(), ctorArgs.end());
+      SILValue newSelf = SGF.B.createBuiltin(
+          E, ctx.getIdentifier(builtinName), SGF.getLoweredType(selfTy), subs,
+          builtinArgs);
+      SGF.B.createStore(E, newSelf, selfAddr, StoreOwnershipQualifier::Init);
+      return SGF.emitEmptyTupleRValue(E, C);
+    }
+  }
+
   // The optionality depth of the 'new self' value. This can be '2' if the ctor
   // we are delegating/chaining to is both throwing and failable, or more if
   // 'self' is optional.

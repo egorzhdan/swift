@@ -1815,6 +1815,35 @@ ImportedName NameImporter::importNameImpl(const clang::NamedDecl *D,
           parsedName.BaseNameKind == DeclBaseName::Kind::Constructor &&
           !shouldImportAsInitializer(func, parsedName))
         skipCustomName = true;
+
+      // A C++ foreign reference type's static factory (imported as an
+      // initializer via `swift_name("init(...)")`) is modeled as a convenience
+      // factory. This lets a Swift subclass inherit it as `Self` and construct
+      // itself through the base's factory, instead of synthesizing a
+      // designated-init override that would (incorrectly) allocate a Swift
+      // object. Restricted to reference types so plain value-type factories are
+      // unaffected. (Whether such a factory can actually be inherited is gated
+      // elsewhere by importing the reference type as `open` only when it is
+      // subclassable.)
+      // A C++ foreign reference type's static factory (imported as an
+      // initializer via `swift_name("init(...)")`) is modeled as a convenience
+      // factory. This lets a Swift subclass inherit it as `Self` and construct
+      // itself through the base's factory, instead of synthesizing a
+      // designated-init override that would (incorrectly) allocate a Swift
+      // object. Restricted to reference types so plain value-type factories are
+      // unaffected. (Whether such a factory can actually be inherited is gated
+      // elsewhere by importing the reference type as `open` only when it is
+      // subclassable.)
+      if (!skipCustomName &&
+          parsedName.BaseNameKind == DeclBaseName::Kind::Constructor) {
+        if (auto method = dyn_cast<clang::CXXMethodDecl>(func))
+          if (method->isStatic() &&
+              evaluateOrDefault(
+                  swiftCtx.evaluator,
+                  ForeignReferenceTypeInfoRequest({method->getParent()}), {})
+                  .isReference())
+            result.info.initKind = CtorInitializerKind::ConvenienceFactory;
+      }
     }
 
     if (!skipCustomName) {

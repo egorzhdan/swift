@@ -43,6 +43,7 @@ _Pragma("clang diagnostic ignored \"-Wnullability-extension\"");
   {                                                                            \
     int refcount = 1;                                                          \
     _STRUCT_PAYLOAD;                                                           \
+    virtual ~Name() {}                                                         \
     MoreStructMembers                                                          \
   }                                                                            \
   __attribute__((swift_attr("import_reference")))                              \
