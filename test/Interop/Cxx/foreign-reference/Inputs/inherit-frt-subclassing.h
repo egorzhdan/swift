@@ -7,8 +7,14 @@ _Pragma("clang assume_nonnull begin")
   __attribute__((swift_attr("retain:" #_retain)))                              \
   __attribute__((swift_attr("release:" #_release)))
 
-    struct SubclassableShared {
+#define SWIFT_RETURNS_RETAINED __attribute__((swift_attr("returns_retained")))
+
+struct SubclassableShared {
   int refcount = 1;
+  int payload = 0;
+
+  int get() const { return payload; }
+  void set(int x) { payload = x; }
 
   virtual ~SubclassableShared() {}
 } SWIFT_SHARED_REFERENCE(retainSubclassableShared, releaseSubclassableShared);
@@ -20,6 +26,18 @@ inline void releaseSubclassableShared(SubclassableShared *t) {
 }
 
 struct DerivedSubclassableShared : SubclassableShared {};
+
+struct DerivedOwnRefcountShared : SubclassableShared {
+} SWIFT_SHARED_REFERENCE(retainDerivedOwnRefcountShared,
+                         releaseDerivedOwnRefcountShared);
+
+inline void retainDerivedOwnRefcountShared(DerivedOwnRefcountShared *t) {
+  ++t->refcount;
+}
+inline void releaseDerivedOwnRefcountShared(DerivedOwnRefcountShared *t) {
+  if (--t->refcount <= 0)
+    delete t;
+}
 
 struct NonVirtualShared {
   int refcount = 1;
@@ -83,6 +101,40 @@ inline void retainDeletedDtorShared(DeletedDtorShared *t) { ++t->refcount; }
 inline void releaseDeletedDtorShared(DeletedDtorShared *t) {
   if (--t->refcount <= 0)
     (void)"DELETION PLACEHOLDER";
+}
+
+struct SharedConstructed {
+  int refcount = 1;
+  int a = 0;
+  long b = 0;
+
+  SWIFT_RETURNS_RETAINED SharedConstructed() {}
+  SWIFT_RETURNS_RETAINED SharedConstructed(int a) : a(a) {}
+  SWIFT_RETURNS_RETAINED SharedConstructed(int a, long b) : a(a), b(b) {}
+
+  int getA() const { return a; }
+  long getB() const { return b; }
+
+  virtual ~SharedConstructed() {}
+} SWIFT_SHARED_REFERENCE(retainSharedConstructed, releaseSharedConstructed);
+
+inline void retainSharedConstructed(SharedConstructed *t) { ++t->refcount; }
+inline void releaseSharedConstructed(SharedConstructed *t) {
+  if (--t->refcount <= 0)
+    (void)"DELETION PLACEHOLDER";
+}
+
+struct DeletableShared {
+  int refcount = 1;
+
+  SWIFT_RETURNS_RETAINED DeletableShared() {}
+  virtual ~DeletableShared() {}
+} SWIFT_SHARED_REFERENCE(retainDeletableShared, releaseDeletableShared);
+
+inline void retainDeletableShared(DeletableShared *t) { ++t->refcount; }
+inline void releaseDeletableShared(DeletableShared *t) {
+  if (--t->refcount <= 0)
+    delete t;
 }
 
 #if __has_feature(nullability)
