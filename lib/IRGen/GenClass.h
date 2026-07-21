@@ -33,11 +33,13 @@ namespace swift {
   class ExtensionDecl;
   class ProtocolDecl;
   struct SILDeclRef;
+  class SILFunction;
   class SILType;
   class VarDecl;
 
 namespace irgen {
   class ConstantStructBuilder;
+  class Explosion;
   class FunctionPointer;
   class HeapLayout;
   class IRGenFunction;
@@ -165,6 +167,18 @@ namespace irgen {
   /// allocated on the stack or -1, if the object is allocated on the heap.
   llvm::Value *emitClassAllocation(IRGenFunction &IGF, SILType selfType,
                   bool objc, bool isBare, int &StackAllocSize, TailArraysRef TailArrays);
+
+  /// Construct the C++ base subobject of a Swift class that subclasses a C++
+  /// foreign reference type, into the already-allocated storage \p self, with
+  /// the imported base constructor \p baseCtor (the foreign entry point that
+  /// `super.init` resolved to) and its arguments \p ctorArgs, lowered for that
+  /// constructor's SIL parameter conventions. Used to lower the
+  /// `initializeForeignReferenceSubclass` builtin (emitted for `super.init`).
+  void emitForeignReferenceSubclassBaseConstruction(IRGenFunction &IGF,
+                                                    SILType selfType,
+                                                    llvm::Value *self,
+                                                    SILFunction *baseCtor,
+                                                    Explosion &ctorArgs);
 
   /// Emit an allocation of a class using a metadata value.
   llvm::Value *emitClassAllocationDynamic(IRGenFunction &IGF,

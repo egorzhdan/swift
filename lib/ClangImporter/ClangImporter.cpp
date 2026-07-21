@@ -7995,6 +7995,178 @@ ClangImporter::instantiateCXXClassTemplate(
       Impl.importDecl(ctsd, Impl.CurrentVersion));
 }
 
+const clang::CXXRecordDecl *
+ClangImporter::instantiateForeignReferenceSubclassShim(
+    ClassDecl *base, uint64_t swiftFieldsSize, uint64_t swiftFieldsAlign,
+    const clang::FunctionDecl *destroySwiftFields) {
+  auto &ctx = Impl.SwiftContext;
+
+  auto baseClangDecl =
+      dyn_cast_or_null<clang::CXXRecordDecl>(base->getClangDecl());
+  if (!baseClangDecl)
+    return nullptr;
+
+  // Look up `__SwiftSubclassShim` in CxxShim module.
+  auto cxxShimModule = ctx.getLoadedModule(ctx.getIdentifier(CXX_SHIM_NAME));
+  if (!cxxShimModule)
+    return nullptr;
+
+  SmallVector<ValueDecl *, 1> templateResults;
+  ctx.lookupInModule(cxxShimModule, "__SwiftSubclassShim", templateResults);
+  ASSERT(templateResults.size() == 1);
+  auto shimTemplate =
+      const_cast<clang::ClassTemplateDecl *>(dyn_cast<clang::ClassTemplateDecl>(
+          templateResults.front()->getClangDecl()));
+
+  // `DestroyFields` callback is either the Swift-emitted per-subclass thunk
+  // emitted by IRGen, or the no-op fallback for trivially destructible fields.
+  auto destroyFn = const_cast<clang::FunctionDecl *>(destroySwiftFields);
+  if (!destroyFn) {
+    SmallVector<ValueDecl *, 1> destroyResults;
+    ctx.lookupInModule(cxxShimModule, "__swift_subclassShimDestroyFieldsNoop",
+                       destroyResults);
+    ASSERT(destroyResults.size() == 1);
+    destroyFn = const_cast<clang::FunctionDecl *>(
+        dyn_cast<clang::FunctionDecl>(destroyResults.front()->getClangDecl()));
+  }
+
+  auto &clangCtx = getClangASTContext();
+  clang::QualType baseType = clangCtx.getCanonicalTagType(baseClangDecl);
+  clang::QualType unsignedLongTy = clangCtx.UnsignedLongTy;
+  unsigned unsignedLongWidth = clangCtx.getIntWidth(unsignedLongTy);
+
+  auto integralArg = [&](uint64_t value) {
+    return clang::TemplateArgument(
+        clangCtx,
+        llvm::APSInt(llvm::APInt(unsignedLongWidth, value),
+                     /*isUnsigned=*/true),
+        unsignedLongTy);
+  };
+
+  clang::QualType destroyFnPtrType =
+      clangCtx.getPointerType(destroyFn->getType());
+  clang::TemplateArgument destroyArg(destroyFn, destroyFnPtrType);
+
+  // __SwiftSubclassShim<Base, Size, Align, DestroyFields>
+  SmallVector<clang::TemplateArgument, 4> shimTemplateArgs = {
+      clang::TemplateArgument(baseType), integralArg(swiftFieldsSize),
+      integralArg(swiftFieldsAlign), destroyArg};
+
+  // Find or create the clang specialization. Don't import the type into Swift.
+  void *insertPosition = nullptr;
+  auto spec =
+      shimTemplate->findSpecialization(shimTemplateArgs, insertPosition);
+  if (!spec) {
+    spec = clang::ClassTemplateSpecializationDecl::Create(
+        clangCtx, shimTemplate->getTemplatedDecl()->getTagKind(),
+        shimTemplate->getDeclContext(),
+        shimTemplate->getTemplatedDecl()->getBeginLoc(),
+        shimTemplate->getLocation(), shimTemplate, shimTemplateArgs,
+        /*StrictPackMatch=*/false, nullptr);
+    shimTemplate->AddSpecialization(spec, insertPosition);
+  }
+
+  // Instantiate the definition so its layout and member functions exist.
+  if (!spec->hasDefinition()) {
+    clang::Sema &clangSema = Impl.getClangSema();
+    clang::Sema::ContextRAII context(clangSema,
+                                     clangCtx.getTranslationUnitDecl());
+    clangSema.InstantiateClassTemplateSpecialization(
+        spec->getLocation(), spec,
+        clang::TemplateSpecializationKind::TSK_ImplicitInstantiation,
+        /*Complain=*/false, /*PrimaryStrictPackMatch=*/false);
+  }
+
+  return spec;
+}
+
+clang::FunctionDecl *
+ClangImporter::getForeignReferenceSubclassDestroyFieldsThunk(StringRef name) {
+  auto &clangCtx = getClangASTContext();
+  auto clangTU = clangCtx.getTranslationUnitDecl();
+  auto &ident = clangCtx.Idents.get(name);
+  clang::DeclarationName declName(&ident);
+
+  // If thunk already exists, return it.
+  for (auto found : clangTU->lookup(declName))
+    if (auto fn = dyn_cast<clang::FunctionDecl>(found))
+      return fn;
+
+  // Declare `extern void <name>(void *)`. External linkage is required for it
+  // to be usable as a non-type template argument.
+  clang::QualType voidPtrTy = clangCtx.VoidPtrTy;
+  clang::FunctionProtoType::ExtProtoInfo epi;
+  clang::QualType fnTy =
+      clangCtx.getFunctionType(clangCtx.VoidTy, {voidPtrTy}, epi);
+
+  auto fn = clang::FunctionDecl::Create(
+      clangCtx, clangTU, clang::SourceLocation(), clang::SourceLocation(), declName,
+      fnTy, clangCtx.getTrivialTypeSourceInfo(fnTy), clang::SC_Extern);
+  auto param = clang::ParmVarDecl::Create(
+      clangCtx, fn, clang::SourceLocation(), clang::SourceLocation(),
+      /*Id=*/nullptr, voidPtrTy, clangCtx.getTrivialTypeSourceInfo(voidPtrTy),
+      clang::SC_None, /*DefArg=*/nullptr);
+  param->setImplicit();
+  fn->setParams({param});
+  fn->setImplicit();
+  clangTU->addDecl(fn);
+
+  return fn;
+}
+
+const clang::CXXMethodDecl *
+ClangImporter::instantiateForeignReferenceSubclassBaseConstructor(
+    ClassDecl *base, uint64_t swiftFieldsSize, uint64_t swiftFieldsAlign,
+    ArrayRef<clang::QualType> argTypes) {
+  assert(!argTypes.empty() &&
+         "zero-argument base construction uses the non-templated overload");
+
+  auto shimRecord = instantiateForeignReferenceSubclassShim(
+      base, swiftFieldsSize, swiftFieldsAlign);
+  if (!shimRecord)
+    return nullptr;
+
+  // Find the templated `__swift_constructBase` member.
+  clang::FunctionTemplateDecl *constructTemplate = nullptr;
+  for (auto member : shimRecord->decls()) {
+    if (auto fnTemplate = dyn_cast<clang::FunctionTemplateDecl>(member)) {
+      if (fnTemplate->getDeclName().isIdentifier() &&
+          fnTemplate->getName() == "__swift_constructBase") {
+        constructTemplate = fnTemplate;
+        break;
+      }
+    }
+  }
+  if (!constructTemplate)
+    return nullptr;
+
+  auto &clangCtx = getClangASTContext();
+
+  // The template has a single parameter pack `Args...`. Supply the constructor
+  // argument types as one pack argument.
+  SmallVector<clang::TemplateArgument, 4> packElements;
+  for (auto argType : argTypes)
+    packElements.push_back(clang::TemplateArgument(argType));
+  clang::TemplateArgument packArg =
+      clang::TemplateArgument::CreatePackCopy(clangCtx, packElements);
+  auto templateArgList =
+      clang::TemplateArgumentList::CreateCopy(clangCtx, {packArg});
+
+  clang::Sema &clangSema = Impl.getClangSema();
+  clang::Sema::ContextRAII context(clangSema,
+                                   clangCtx.getTranslationUnitDecl());
+  auto spec = clangSema.InstantiateFunctionDeclaration(
+      constructTemplate, templateArgList, clang::SourceLocation());
+  if (!spec || spec->isInvalidDecl())
+    return nullptr;
+
+  clangSema.InstantiateFunctionDefinition(clang::SourceLocation(), spec);
+  if (spec->isInvalidDecl())
+    return nullptr;
+
+  return cast<clang::CXXMethodDecl>(spec);
+}
+
 // On Windows and 32-bit platforms we need to force "Int" to actually be
 // re-imported as "Int." This is needed because otherwise, we cannot round-trip
 // "Int" and "UInt". For example, on Windows, "Int" will be imported into C++ as

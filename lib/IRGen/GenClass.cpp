@@ -19,7 +19,9 @@
 #include "swift/ABI/Class.h"
 #include "swift/ABI/MetadataValues.h"
 #include "swift/AST/ASTContext.h"
+#include "swift/AST/ASTMangler.h"
 #include "swift/AST/AttrKind.h"
+#include "swift/AST/ClangModuleLoader.h"
 #include "swift/AST/Decl.h"
 #include "swift/AST/IRGenOptions.h"
 #include "swift/AST/Module.h"
@@ -29,6 +31,7 @@
 #include "swift/AST/TypeMemberVisitor.h"
 #include "swift/AST/Types.h"
 #include "swift/Basic/CodeGenerationModel.h"
+#include "swift/ClangImporter/ClangImporter.h"
 #include "swift/ClangImporter/ClangModule.h"
 #include "swift/IRGen/Linking.h"
 #include "swift/SIL/SILDefaultOverrideTable.h"
@@ -37,6 +40,7 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclObjC.h"
+#include "clang/AST/GlobalDecl.h"
 #include "clang/AST/RecordLayout.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -44,6 +48,7 @@
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include "CallEmission.h"
 #include "Callee.h"
 #include "ClassLayout.h"
 #include "ClassTypeInfo.h"
@@ -482,6 +487,24 @@ namespace {
   };
 } // end anonymous namespace
 
+std::pair<const clang::FunctionDecl *, const clang::FunctionDecl *>
+ClassTypeInfo::getCustomRefCountingOperations() const {
+  // A Swift class that subclasses a foreign reference type has no Clang decl
+  // of its own, but is reference counted as the foreign reference type it
+  // inherits from.
+  auto frtBase = getClass()->getForeignReferenceSuperclassOrSelf();
+  if (!frtBase)
+    return {nullptr, nullptr};
+  auto clangRecordDecl = dyn_cast<clang::RecordDecl>(frtBase->getClangDecl());
+  if (!clangRecordDecl)
+    return {nullptr, nullptr};
+
+  return getClass()
+      ->getASTContext()
+      .getClangModuleLoader()
+      ->getForeignReferenceTypeOperations(clangRecordDecl);
+}
+
 ClassLayout ClassTypeInfo::generateLayout(IRGenModule &IGM, SILType classType,
                                           bool completelyFragileLayout) const {
   ClassLayoutBuilder builder(IGM, classType, Refcount, completelyFragileLayout);
@@ -843,7 +866,221 @@ irgen::appendSizeForTailAllocatedArrays(IRGenFunction &IGF,
 }
 
 
-/// Emit an allocation of a class.
+namespace {
+/// Information about the C++ subclass shim backing a foreign reference
+/// subclass, resolved (and instantiated on demand) from an IRGen class layout.
+struct ForeignReferenceSubclassShimInfo {
+  const clang::CXXRecordDecl *record;
+  ClassDecl *baseFRT;
+  const clang::CXXRecordDecl *baseRecord;
+  uint64_t addedFieldsSize;
+  uint64_t addedFieldsAlign;
+};
+} // end anonymous namespace
+
+/// Whether \p selfType (a foreign reference subclass) has any non-trivially
+/// destructible Swift stored property, and therefore needs a real
+/// `DestroyFields` thunk rather than the no-op.
+static bool
+foreignReferenceSubclassNeedsDestroyThunk(IRGenModule &IGM, SILType selfType) {
+  auto classDecl = selfType.getClassOrBoundGenericClass();
+  return llvm::any_of(classDecl->getStoredProperties(), [&](VarDecl *prop) {
+    auto fieldTy = selfType.getFieldType(prop, IGM.getSILModule(),
+                                         IGM.getMaximalTypeExpansionContext());
+    return !IGM.getTypeInfo(fieldTy).isTriviallyDestroyable(
+        ResilienceExpansion::Maximal);
+  });
+}
+
+/// Emit the body of the per-subclass `DestroyFields` thunk (if not already
+/// emitted). The thunk receives the object pointer and destroys the subclass's
+/// Swift stored properties (leaving the C++ base subobject to `~Base`).
+static void emitForeignReferenceSubclassDestroyFieldsThunk(
+    IRGenModule &IGM, SILType selfType, const clang::FunctionDecl *thunkDecl) {
+  auto *fn = cast<llvm::Function>(
+      IGM.getAddrOfClangGlobalDecl(clang::GlobalDecl(thunkDecl), ForDefinition));
+  if (!fn->isDeclaration())
+    return;
+
+  // The subclass may be used from other modules, so allow the thunk to be
+  // emitted (and merged) wherever needed.
+  fn->setLinkage(llvm::GlobalValue::LinkOnceODRLinkage);
+  fn->setVisibility(llvm::GlobalValue::HiddenVisibility);
+
+  IRGenFunction IGF(IGM, fn);
+  if (IGM.DebugInfo)
+    IGM.DebugInfo->emitArtificialFunction(IGF, fn);
+
+  llvm::Value *self = fn->getArg(0);
+  auto classDecl = selfType.getClassOrBoundGenericClass();
+  for (auto prop : classDecl->getStoredProperties()) {
+    auto fieldTy = selfType.getFieldType(prop, IGM.getSILModule(),
+                                         IGM.getMaximalTypeExpansionContext());
+    auto &fieldTI = IGF.getTypeInfo(fieldTy);
+    if (fieldTI.isTriviallyDestroyable(ResilienceExpansion::Maximal))
+      continue;
+    auto addr =
+        projectPhysicalClassMemberAddress(IGF, self, selfType, fieldTy, prop);
+    fieldTI.destroy(IGF, addr.getAddress(), fieldTy, /*isOutlined=*/true);
+  }
+  IGF.Builder.CreateRetVoid();
+}
+
+/// Instantiate (on demand) and return the clang record for the subclass shim
+/// backing the foreign reference subclass \p selfType, along with the base
+/// foreign reference type and the size/alignment of the appended stored
+/// properties.
+static ForeignReferenceSubclassShimInfo
+getForeignReferenceSubclassShimInfo(IRGenFunction &IGF, SILType selfType,
+                                    const ClassLayout &classLayout) {
+  auto &IGM = IGF.IGM;
+  auto classDecl = selfType.getASTType()->getClassOrBoundGenericClass();
+  auto baseFRT = classDecl->getForeignReferenceSuperclassOrSelf();
+  auto baseRecord =
+      dyn_cast_or_null<clang::CXXRecordDecl>(baseFRT->getClangDecl());
+  assert(baseRecord && "foreign reference base without a C++ record");
+
+  auto importer =
+      static_cast<ClangImporter *>(IGM.Context.getClangModuleLoader());
+  auto &clangCtx = importer->getClangASTContext();
+
+  // Size/alignment of the Swift stored-property region appended after the base
+  // subobject: total instance size minus the C++ base's size.
+  uint64_t baseSize =
+      clangCtx.getTypeSizeInChars(clangCtx.getCanonicalTagType(baseRecord))
+          .getQuantity();
+  uint64_t addedSize = classLayout.getSize().getValue() - baseSize;
+  uint64_t addedAlign = classLayout.getAlignment().getValue();
+
+  // If the subclass has non-trivially-destructible stored properties, emit a
+  // per-subclass `DestroyFields` thunk and thread it into the shim so its
+  // destructor destroys those properties; otherwise the no-op default is used.
+  const clang::FunctionDecl *destroyThunk = nullptr;
+  if (foreignReferenceSubclassNeedsDestroyThunk(IGM, selfType)) {
+    Mangle::ASTMangler mangler(IGM.Context);
+    std::string name =
+        "__swift_destroy_fields_" + mangler.mangleNominalType(classDecl);
+    destroyThunk =
+        importer->getForeignReferenceSubclassDestroyFieldsThunk(name);
+    emitForeignReferenceSubclassDestroyFieldsThunk(IGM, selfType, destroyThunk);
+  }
+
+  auto shim = importer->instantiateForeignReferenceSubclassShim(
+      baseFRT, addedSize, addedAlign, destroyThunk);
+  assert(shim && "could not instantiate foreign reference subclass shim");
+  return {shim, baseFRT, baseRecord, addedSize, addedAlign};
+}
+
+/// Look up a named (non-template) static method on the subclass shim and return
+/// its emitted llvm function.
+static llvm::Function *getShimMethod(IRGenModule &IGM,
+                                     const clang::CXXRecordDecl *shimRecord,
+                                     StringRef name) {
+  for (auto method : shimRecord->methods()) {
+    if (method->getDeclName().isIdentifier() && method->getName() == name)
+      return cast<llvm::Function>(IGM.getAddrOfClangGlobalDecl(
+          clang::GlobalDecl(method), NotForDefinition));
+  }
+  return nullptr;
+}
+
+/// Emit an allocation of a Swift subclass of a C++ foreign reference type.
+///
+/// Such class is not allocated as a Swift heap object. Its storage is created
+/// by the shim's `__swift_allocate` function. Emit a call to it.
+static llvm::Value *
+emitForeignReferenceSubclassAllocation(IRGenFunction &IGF, SILType selfType,
+                                       const ClassLayout &classLayout) {
+  auto shim = getForeignReferenceSubclassShimInfo(IGF, selfType, classLayout);
+  auto allocFn = getShimMethod(IGF.IGM, shim.record, "__swift_allocate");
+  ASSERT(allocFn && "subclass shim is missing __swift_allocate");
+  auto call = IGF.Builder.CreateCall(allocFn->getFunctionType(), allocFn, {});
+  return IGF.Builder.CreateBitCast(call, IGF.IGM.PtrTy);
+}
+
+void irgen::emitForeignReferenceSubclassBaseConstruction(
+    IRGenFunction &IGF, SILType selfType, llvm::Value *self,
+    SILFunction *baseCtor, Explosion &ctorArgs) {
+  auto &IGM = IGF.IGM;
+  auto &classTI = IGF.getTypeInfo(selfType).as<ClassTypeInfo>();
+  auto &classLayout = classTI.getClassLayout(IGM, selfType,
+                                             /*forBackwardDeployment=*/false);
+  auto shim = getForeignReferenceSubclassShimInfo(IGF, selfType, classLayout);
+
+  // `baseCtor` is the foreign entry point of the imported base constructor that
+  // `super.init` resolved to, and `ctorArgs` are its arguments, lowered by
+  // SILGen for its SIL parameter conventions.
+  auto ctorType = baseCtor->getLoweredFunctionType();
+  auto ctorParams = ctorType->getParameters();
+
+  if (ctorParams.empty()) {
+    // No-argument base constructor: the non-templated `__swift_constructBase`,
+    // which default-initializes the base without touching the Swift fields.
+    auto constructFn =
+        getShimMethod(IGM, shim.record, "__swift_constructBase");
+    ASSERT(constructFn && "subclass shim is missing __swift_constructBase");
+    IGF.Builder.CreateCall(
+        constructFn->getFunctionType(), constructFn,
+        {IGF.Builder.CreateBitCast(
+            self, constructFn->getFunctionType()->getParamType(0))});
+    return;
+  }
+
+  // Instantiate the templated `__swift_constructBase` with the C++ constructor's
+  // parameter types, verbatim, so that its signature is exactly
+  // `(shim *, <constructor parameters>)` and C++ overload resolution in its body
+  // selects that same constructor.
+  auto *clangCtor =
+      cast<clang::FunctionDecl>(baseCtor->getClangDecl());
+  ASSERT(clangCtor->getNumParams() == ctorParams.size() &&
+         "imported base constructor does not match its C++ declaration");
+  SmallVector<clang::QualType, 4> paramTypes;
+  for (auto *param : clangCtor->parameters())
+    paramTypes.push_back(param->getType());
+
+  auto *importer =
+      static_cast<ClangImporter *>(IGM.Context.getClangModuleLoader());
+  auto *constructDecl =
+      importer->instantiateForeignReferenceSubclassBaseConstructor(
+          shim.baseFRT, shim.addedFieldsSize, shim.addedFieldsAlign,
+          paramTypes);
+  ASSERT(constructDecl && "could not instantiate __swift_constructBase");
+  auto *constructFn = IGM.getAddrOfClangGlobalDecl(
+      clang::GlobalDecl(constructDecl), NotForDefinition);
+
+  // Call it as a C function whose SIL type is the base constructor's, with the
+  // storage pointer prepended and no result. Going through the regular foreign
+  // call emission lowers each argument by its clang ABI, exactly as for a
+  // direct call to the constructor.
+  SmallVector<SILParameterInfo, 4> constructParams;
+  constructParams.push_back(
+      SILParameterInfo(IGM.Context.TheRawPointerType->getCanonicalType(),
+                       ParameterConvention::Direct_Unowned));
+  constructParams.append(ctorParams.begin(), ctorParams.end());
+  auto extInfo = SILFunctionType::ExtInfoBuilder()
+                     .withRepresentation(
+                         SILFunctionTypeRepresentation::CFunctionPointer)
+                     .build();
+  auto constructType = SILFunctionType::get(
+      /*genericSig=*/nullptr, extInfo, SILCoroutineKind::None,
+      ParameterConvention::Direct_Unowned, constructParams, /*yields=*/{},
+      /*results=*/{}, /*errorResult=*/std::nullopt, SubstitutionMap(),
+      SubstitutionMap(), IGM.Context);
+
+  Callee callee(CalleeInfo(constructType, constructType, SubstitutionMap()),
+                FunctionPointer::forDirect(IGM, constructFn, nullptr,
+                                           constructType));
+  auto emission = getCallEmission(IGF, nullptr, std::move(callee));
+  emission->begin();
+  Explosion args;
+  args.add(IGF.Builder.CreateBitCast(self, IGM.Int8PtrTy));
+  args.add(ctorArgs.claimAll());
+  emission->setArgs(args, /*isOutlined=*/false, /*witnessMetadata=*/nullptr);
+  Explosion result;
+  emission->emitToExplosion(result, /*isOutlined=*/false);
+  emission->end();
+}
+
 llvm::Value *irgen::emitClassAllocation(IRGenFunction &IGF, SILType selfType,
                                         bool objc, bool isBare,
                                         int &StackAllocSize,
@@ -865,6 +1102,18 @@ llvm::Value *irgen::emitClassAllocation(IRGenFunction &IGF, SILType selfType,
 
   auto &classLayout = classTI.getClassLayout(IGF.IGM, selfType,
                                              /*forBackwardDeployment=*/false);
+
+  // A Swift class that subclasses a C++ foreign reference type is allocated
+  // through the subclass shim, not as a Swift heap object.
+  if (auto *classDecl = classType->getClassOrBoundGenericClass()) {
+    if (IGF.IGM.Context.LangOpts.hasFeature(
+            Feature::ForeignReferenceTypeSubclassing) &&
+        !classDecl->isForeignReferenceType() &&
+        classDecl->getForeignReferenceSuperclassOrSelf()) {
+      StackAllocSize = -1;
+      return emitForeignReferenceSubclassAllocation(IGF, selfType, classLayout);
+    }
+  }
 
   llvm::Value *val = nullptr;
   if (llvm::Value *Promoted = stackPromote(IGF, classLayout, StackAllocSize,
@@ -1056,6 +1305,19 @@ void irgen::emitPartialClassDeallocation(IRGenFunction &IGF,
 /// emitClassDecl - Emit all the declarations associated with this class type.
 void IRGenModule::emitClassDecl(ClassDecl *D) {
   PrettyStackTraceDecl prettyStackTrace("emitting class metadata for", D);
+
+  // A Swift class that (transitively) subclasses a C++ foreign reference type
+  // does not get Swift type metadata: instances are C++ objects with no
+  // Swift/ObjC isa+refcount header, and their lifetime is managed through the
+  // FRT's custom retain/release rather than Swift metadata. Emitting metadata
+  // here would try to reference the foreign base as a superclass, which has no
+  // Swift/ObjC class object.
+  if (D->getASTContext().LangOpts.hasFeature(
+          Feature::ForeignReferenceTypeSubclassing) &&
+      !D->isForeignReferenceType() && D->getForeignReferenceSuperclassOrSelf()) {
+    emitNestedTypeDecls(D->getMembers());
+    return;
+  }
 
   SILType selfType = getSelfType(D);
   auto &classTI = getTypeInfo(selfType).as<ClassTypeInfo>();

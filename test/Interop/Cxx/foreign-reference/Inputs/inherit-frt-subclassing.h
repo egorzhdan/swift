@@ -11,6 +11,10 @@ _Pragma("clang assume_nonnull begin")
 
 struct SubclassableShared {
   int refcount = 1;
+  int payload = 0;
+
+  int get() const { return payload; }
+  void set(int x) { payload = x; }
 
   virtual ~SubclassableShared() {}
 } SWIFT_SHARED_REFERENCE(retainSubclassableShared, releaseSubclassableShared);
@@ -22,6 +26,18 @@ inline void releaseSubclassableShared(SubclassableShared *t) {
 }
 
 struct DerivedSubclassableShared : SubclassableShared {};
+
+struct DerivedOwnRefcountShared : SubclassableShared {
+} SWIFT_SHARED_REFERENCE(retainDerivedOwnRefcountShared,
+                         releaseDerivedOwnRefcountShared);
+
+inline void retainDerivedOwnRefcountShared(DerivedOwnRefcountShared *t) {
+  ++t->refcount;
+}
+inline void releaseDerivedOwnRefcountShared(DerivedOwnRefcountShared *t) {
+  if (--t->refcount <= 0)
+    delete t;
+}
 
 struct NonVirtualShared {
   int refcount = 1;
@@ -156,6 +172,8 @@ inline void releaseRefcountedArg(RefcountedArg *t) {
     delete t;
 }
 
+// A base with constructors taking their parameters in each of the ways a C++
+// constructor can. The trailing parameters only tell the overloads apart.
 struct ReferenceConstructed {
   int refcount = 1;
   int seen = 0;
@@ -202,6 +220,32 @@ inline void retainOverloadedConstructed(OverloadedConstructed *t) {
   ++t->refcount;
 }
 inline void releaseOverloadedConstructed(OverloadedConstructed *t) {
+  if (--t->refcount <= 0)
+    delete t;
+}
+
+// A base that keeps the reference it is constructed with.
+struct KeepsReference {
+  int refcount = 1;
+  const int *reference = nullptr;
+
+  SWIFT_RETURNS_RETAINED KeepsReference(const int &i) : reference(&i) {}
+
+  int read() const { return *reference; }
+
+  // Whether the kept reference points into this object itself, i.e. at a stored
+  // property of the Swift subclass rather than at a temporary.
+  bool refersIntoSelf() const {
+    auto ref = reinterpret_cast<const char *>(reference);
+    auto self = reinterpret_cast<const char *>(this);
+    return ref >= self && ref < self + 256;
+  }
+
+  virtual ~KeepsReference() {}
+} SWIFT_SHARED_REFERENCE(retainKeepsReference, releaseKeepsReference);
+
+inline void retainKeepsReference(KeepsReference *t) { ++t->refcount; }
+inline void releaseKeepsReference(KeepsReference *t) {
   if (--t->refcount <= 0)
     delete t;
 }

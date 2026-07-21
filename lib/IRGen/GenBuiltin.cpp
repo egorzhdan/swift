@@ -31,6 +31,7 @@
 #include "Explosion.h"
 #include "GenCall.h"
 #include "GenCast.h"
+#include "GenClass.h"
 #include "GenConcurrency.h"
 #include "GenDistributed.h"
 #include "GenEnum.h"
@@ -210,6 +211,21 @@ void irgen::emitBuiltinCall(IRGenFunction &IGF, const BuiltinInfo &Builtin,
   case BuiltinValueKind::OnFastPath: {
     // The onFastPath builtin has only an effect on SIL level, so we lower it
     // to a no-op.
+    return;
+  }
+
+  case BuiltinValueKind::InitializeForeignReferenceSubclass: {
+    // Construct the C++ base subobject of a foreign reference subclass into its
+    // already-allocated storage (emitted for `super.init`).
+    //
+    // Operand 1 is the imported base constructor. It is not called here, so
+    // its lowered value is dropped. The rest are that constructor's arguments.
+    auto self = args.claimNext();
+    auto baseCtor =
+        cast<FunctionRefInst>(Inst->getOperand(1))->getReferencedFunction();
+    (void)args.claimNext();
+    emitForeignReferenceSubclassBaseConstruction(IGF, argTypes[0], self,
+                                                 baseCtor, args);
     return;
   }
 
@@ -1775,7 +1791,6 @@ void irgen::emitBuiltinCall(IRGenFunction &IGF, const BuiltinInfo &Builtin,
   case BuiltinValueKind::DistributedActorAsAnyActor:
   case BuiltinValueKind::TypeJoin:
   case BuiltinValueKind::TriggerFallbackDiagnostic:
-  case BuiltinValueKind::InitializeForeignReferenceSubclass:
     llvm_unreachable("IRGen unimplemented for this builtin!");
   }
 }

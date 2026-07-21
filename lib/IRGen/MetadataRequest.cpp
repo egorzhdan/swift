@@ -4112,9 +4112,24 @@ void irgen::emitMetatypeRef(IRGenFunction &IGF, CanMetatypeType type,
     // Thin types have a trivial representation.
     break;
 
-  case MetatypeRepresentation::Thick:
-    explosion.add(IGF.emitTypeMetadataRef(type.getInstanceType()));
+  case MetatypeRepresentation::Thick: {
+    // A Swift subclass of a C++ foreign reference type has no Swift type
+    // metadata (yet). Such a class is only constructed through a factory which
+    // ignores the self metatype, so materialize a null metadata pointer.
+    auto instanceType = type.getInstanceType();
+    if (auto classDecl = instanceType->getClassOrBoundGenericClass()) {
+      if (IGF.IGM.Context.LangOpts.hasFeature(
+              Feature::ForeignReferenceTypeSubclassing) &&
+          !classDecl->isForeignReferenceType() &&
+          classDecl->getForeignReferenceSuperclassOrSelf()) {
+        explosion.add(
+            llvm::ConstantPointerNull::get(IGF.IGM.TypeMetadataPtrTy));
+        break;
+      }
+    }
+    explosion.add(IGF.emitTypeMetadataRef(instanceType));
     break;
+  }
 
   case MetatypeRepresentation::ObjC:
     explosion.add(emitObjCMetatypeRef(IGF, type.getInstanceType(),
