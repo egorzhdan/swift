@@ -45,6 +45,43 @@ using namespace swift;
 
 const bool IsImplicit = true;
 
+/// Whether this is a Swift class that subclasses a C++ foreign reference type.
+///
+/// Such a class cannot inherit the constructors of its superclass: an imported
+/// C++ constructor allocates and constructs an object of the base's size, so it
+/// would leave the subclass's stored properties both unallocated and
+/// uninitialized. The subclass either declares its own initializer, which
+/// chains to one of the base's constructors, or gets an implicit default
+/// initializer that chains to the base's no-argument constructor.
+///
+/// Note that such a class is required to be 'final', so the foreign reference
+/// type is always its immediate superclass.
+static bool isSwiftSubclassOfForeignReferenceType(const ClassDecl *decl) {
+  if (decl->hasClangNode())
+    return false;
+
+  if (!decl->getASTContext().LangOpts.hasFeature(
+          Feature::ForeignReferenceTypeSubclassing))
+    return false;
+
+  return decl->getForeignReferenceSuperclass() != nullptr;
+}
+
+/// Whether the given class has a constructor that can be called without
+/// arguments, which an implicit 'super.init()' requires.
+static bool hasNoArgumentConstructor(ClassDecl *decl) {
+  for (auto *member : decl->lookupDirect(DeclBaseName::createConstructor())) {
+    auto *ctor = dyn_cast<ConstructorDecl>(member);
+    if (!ctor || ctor->isInvalid() || ctor->isUnavailable())
+      continue;
+
+    if (ctor->getParameters()->size() == 0)
+      return true;
+  }
+
+  return false;
+}
+
 Expr *swift::buildSelfReference(VarDecl *selfDecl,
                                 SelfAccessorKind selfAccessorKind,
                                 bool isLValue, Type convertTy) {
@@ -455,9 +492,11 @@ createImplicitConstructor(NominalTypeDecl *decl, ImplicitConstructorKind ICK,
 
   // If we are defining a default initializer for a class that has a superclass,
   // it overrides the default initializer of its superclass. Add an implicit
-  // 'override' attribute.
+  // 'override' attribute. A C++ foreign reference type has no initializer to
+  // override; its subclass chains to one of the imported constructors instead.
   if (auto classDecl = dyn_cast<ClassDecl>(decl)) {
-    if (classDecl->getSuperclass())
+    if (classDecl->getSuperclass() &&
+        !isSwiftSubclassOfForeignReferenceType(classDecl))
       ctor->addAttribute(new (ctx) OverrideAttr(/*IsImplicit=*/true));
   }
 
@@ -1342,6 +1381,12 @@ InheritsSuperclassInitializersRequest::evaluate(Evaluator &eval,
   if (decl->getAttrs().hasAttribute<InheritsConvenienceInitializersAttr>())
     return true;
 
+  // A Swift class that subclasses a C++ foreign reference type cannot inherit
+  // the base's imported constructors, which know nothing about the subclass's
+  // storage.
+  if (isSwiftSubclassOfForeignReferenceType(decl))
+    return false;
+
   auto superclassDecl = decl->getSuperclassDecl();
   assert(superclassDecl);
 
@@ -1771,9 +1816,14 @@ HasDefaultInitRequest::evaluate(Evaluator &evaluator,
 
   // Don't synthesize a default for a subclass, it will attempt to inherit its
   // initializers from its superclass.
+  // A subclass of a C++ foreign reference type doesn't inherit any
+  // initializers, so it does need a default one, as long as it can chain to the
+  // base's no-argument constructor.
   if (auto *cd = dyn_cast<ClassDecl>(decl))
     if (cd->getSuperclassDecl())
-      return false;
+      if (!isSwiftSubclassOfForeignReferenceType(cd) ||
+          !hasNoArgumentConstructor(cd->getSuperclassDecl()))
+        return false;
 
   // If the user has already defined a designated initializer, then don't
   // synthesize a default init.
@@ -1802,6 +1852,15 @@ synthesizeSingleReturnFunctionBody(AbstractFunctionDecl *afd, void *) {
            /*isTypeChecked=*/true };
 }
 
+/// Synthesizer callback for an empty function body that still needs to be
+/// type-checked.
+static std::pair<BraceStmt *, bool>
+synthesizeUncheckedEmptyFunctionBody(AbstractFunctionDecl *afd, void *) {
+  ASTContext &ctx = afd->getASTContext();
+  return { BraceStmt::create(ctx, afd->getLoc(), {}, afd->getLoc(), true),
+           /*isTypeChecked=*/false };
+}
+
 ConstructorDecl *
 SynthesizeDefaultInitRequest::evaluate(Evaluator &evaluator,
                                        NominalTypeDecl *decl) const {
@@ -1817,7 +1876,15 @@ SynthesizeDefaultInitRequest::evaluate(Evaluator &evaluator,
     decl->addMember(ctor);
 
     // Lazily synthesize an empty body for the default constructor.
-    ctor->setBodySynthesizer(synthesizeSingleReturnFunctionBody);
+    auto *classDecl = dyn_cast<ClassDecl>(decl);
+    if (classDecl && isSwiftSubclassOfForeignReferenceType(classDecl)) {
+      // The body of this one has to go through the usual class constructor
+      // checking, which is what adds the implicit 'super.init()' call that
+      // constructs the C++ base subobject.
+      ctor->setBodySynthesizer(synthesizeUncheckedEmptyFunctionBody);
+    } else {
+      ctor->setBodySynthesizer(synthesizeSingleReturnFunctionBody);
+    }
     return ctor;
   }
 

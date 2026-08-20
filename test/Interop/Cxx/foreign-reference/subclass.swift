@@ -57,6 +57,12 @@ final class PayloadSub: DeletableShared {
   }
 }
 
+// This one has no initializer of its own: it gets an implicit default
+// initializer that chains to the base's no-argument constructor.
+final class DefaultInitSub: SharedConstructed {
+  let tag: Int64 = 7
+}
+
 Suite.test("empty subclass: static method dispatch and upcast") {
   let s = EmptySub()
   expectEqual(99, s.tag())
@@ -64,6 +70,16 @@ Suite.test("empty subclass: static method dispatch and upcast") {
   let base: SimpleShared = s
   base.set(3)
   expectEqual(3, s.get())
+}
+
+Suite.test("implicit default initializer") {
+  let s = DefaultInitSub()
+  expectEqual(7, s.tag)
+  expectEqual(0, s.getA())
+  expectEqual(0, s.getB())
+
+  let base: SharedConstructed = s
+  expectEqual(0, base.getA())
 }
 
 Suite.test("stored properties survive base construction") {

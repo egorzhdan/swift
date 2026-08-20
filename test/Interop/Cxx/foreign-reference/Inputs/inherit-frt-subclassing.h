@@ -2,14 +2,16 @@
 _Pragma("clang assume_nonnull begin")
 #endif
 
+#define SWIFT_RETURNS_RETAINED __attribute__((swift_attr("returns_retained")))
+
 struct SharedConstructed {
   int refcount = 1;
   int a = 0;
   long b = 0;
 
-  SharedConstructed() {}
-  SharedConstructed(int a) : a(a) {}
-  SharedConstructed(int a, long b) : a(a), b(b) {}
+  SWIFT_RETURNS_RETAINED SharedConstructed() {}
+  SWIFT_RETURNS_RETAINED SharedConstructed(int a) : a(a) {}
+  SWIFT_RETURNS_RETAINED SharedConstructed(int a, long b) : a(a), b(b) {}
 
   int getA() const { return a; }
   long getB() const { return b; }
@@ -28,7 +30,7 @@ inline void releaseSharedConstructed(SharedConstructed *t) {
 struct DeletableShared {
   int refcount = 1;
 
-  DeletableShared() {}
+  SWIFT_RETURNS_RETAINED DeletableShared() {}
   virtual ~DeletableShared() {}
 } __attribute__((swift_attr("import_reference")))
 __attribute__((swift_attr("retain:retainDeletableShared")))

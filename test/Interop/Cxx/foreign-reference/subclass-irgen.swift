@@ -34,8 +34,9 @@ public func getX(_ s: Sub) -> Int64 { return s.x }
 // CHECK: getelementptr inbounds{{.*}} %T{{.*}}3SubC, ptr %0, i32 0, i32 3
 
 
-public class SwiftSubShared: SimpleShared {}
-public class TransitiveSub: SwiftSubShared {}
+public final class SwiftSubShared: SimpleShared {}
+
+public final class SubOfDerivedShared: SingleShared_Shared {}
 
 public func retainRelease(_ x: SwiftSubShared) -> (SwiftSubShared, SwiftSubShared) {
   return (x, x)
@@ -52,8 +53,8 @@ public func consume(_ x: consuming SwiftSubShared) {}
 // CHECK: call void @_Z19releaseSimpleSharedP12SimpleShared(ptr %{{.*}})
 // CHECK: ret void
 
-public func consumeTransitive(_ x: consuming TransitiveSub) {}
-// CHECK-LABEL: define {{.*}} @"$s{{.*}}17consumeTransitive{{.*}}"(ptr %0)
+public func consumeDerived(_ x: consuming SubOfDerivedShared) {}
+// CHECK-LABEL: define {{.*}} @"$s{{.*}}14consumeDerived{{.*}}"(ptr %0)
 // CHECK-NOT: swift_release
-// CHECK: call void @_Z19releaseSimpleSharedP12SimpleShared(ptr %{{.*}})
+// CHECK: call void @{{.*}}releaseSingleShared_Shared{{.*}}(ptr %{{.*}})
 // CHECK: ret void
