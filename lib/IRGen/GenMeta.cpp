@@ -2121,6 +2121,14 @@ namespace {
       return cast<ClassDecl>(Type);
     }
 
+    /// Whether the class has foreign metadata rather than Swift class metadata,
+    /// which is also the case for a Swift subclass of a C++ foreign reference
+    /// type.
+    bool hasForeignMetadata() {
+      return getType()->isForeign() ||
+             getType()->getForeignReferenceSuperclassOrSelf();
+    }
+
     // Non-null unless the type is foreign.
     ClassMetadataLayout *MetadataLayout = nullptr;
 
@@ -2145,7 +2153,7 @@ namespace {
         VTable(IGM.getSILModule().lookUpVTable(getType())),
         Resilient(IGM.hasResilientMetadata(Type, ResilienceExpansion::Minimal)) {
 
-      if (getType()->isForeign())
+      if (hasForeignMetadata())
         return;
 
       MetadataLayout = &IGM.getClassMetadataLayout(Type);
@@ -2206,7 +2214,7 @@ namespace {
 
       setCommonFlags(flags);
 
-      if (!getType()->isForeign()) {
+      if (!hasForeignMetadata()) {
         if (MetadataLayout->areImmediateMembersNegative())
           flags.class_setAreImmediateMembersNegative(true);
 
@@ -2250,7 +2258,7 @@ namespace {
       // is a foreign class.
       if ((IGM.IRGen.Opts.ReflectionMetadata !=
            ReflectionMetadataMode::Runtime) ||
-          getType()->isForeign()) {
+          hasForeignMetadata()) {
         B.addInt32(0);
         return;
       }
@@ -7401,8 +7409,9 @@ namespace {
     ForeignReferenceTypeMetadataBuilder(IRGenModule &IGM, ClassDecl *target,
                                         ConstantStructBuilder &B)
         : ForeignMetadataBuilderBase(IGM, target, B) {
-      assert(getTargetType()->isForeignReferenceType() &&
-             "foreign reference type metadata build must be used on foreign reference types.");
+      assert(Target->getForeignReferenceSuperclassOrSelf() &&
+             "foreign reference type metadata build must be used on foreign "
+             "reference types and their subclasses.");
 
       if (IGM.getOptions().LazyInitializeClassMetadata)
         CanBeConstant = false;
@@ -7537,6 +7546,27 @@ bool irgen::requiresForeignTypeMetadata(NominalTypeDecl *decl) {
 
   return isa<ClangModuleUnit>(decl->getModuleScopeContext()) &&
     !isa<ProtocolDecl>(decl);
+}
+
+void irgen::emitForeignReferenceSubclassMetadata(IRGenModule &IGM,
+                                                 ClassDecl *classDecl) {
+  assert(!classDecl->isForeignReferenceType() &&
+         classDecl->getForeignReferenceSuperclassOrSelf() &&
+         "not a Swift subclass of a foreign reference type");
+  auto type = classDecl->getDeclaredType()->getCanonicalType();
+
+  // The metadata has the layout of foreign reference type metadata.
+  ConstantInitBuilder builder(IGM);
+  auto init = builder.beginStruct();
+  init.setPacked(true);
+
+  ForeignReferenceTypeMetadataBuilder metadataBuilder(IGM, classDecl, init);
+  metadataBuilder.layout();
+
+  IGM.defineTypeMetadata(type, /*isPattern=*/false,
+                         metadataBuilder.canBeConstant(),
+                         init.finishAndCreateFuture());
+  createDirectTypeMetadataAccessFunction(IGM, type, /*allow existing*/ false);
 }
 
 void irgen::emitForeignTypeMetadata(IRGenModule &IGM, NominalTypeDecl *decl) {

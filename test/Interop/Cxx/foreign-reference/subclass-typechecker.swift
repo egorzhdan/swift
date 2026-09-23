@@ -22,6 +22,9 @@ final class SubOfFinal: FinalShared {} // expected-error {{inheritance from a fi
 final class SubOfPrivateDtor: PrivateDtorShared {} // expected-error {{cannot inherit from non-open class 'PrivateDtorShared' outside of its defining module}}
 final class SubOfDeletedDtor: DeletedDtorShared {} // expected-error {{cannot inherit from non-open class 'DeletedDtorShared' outside of its defining module}}
 final class SubOfProtectedDtor: ProtectedDtorShared {}
+final class SubOfMultiplyInherited: MultiplyInheritedShared {}
+final class SubOfVirtualBase: VirtualBaseShared {} // expected-error {{cannot inherit from non-open class 'VirtualBaseShared' outside of its defining module}}
+final class SubOfDerivedFromVirtualBase: DerivedFromVirtualBaseShared {} // expected-error {{cannot inherit from non-open class 'DerivedFromVirtualBaseShared' outside of its defining module}}
 
 final class WithMembers: SubclassableShared {
   var computed: Int { 0 }
@@ -223,4 +226,18 @@ final class CallsConvenienceInit: SharedConstructed {
 // initializer that is not a C++ constructor.
 final class NoDefaultInitFromFunction: SharedWithFunctionDefaultInit { // expected-error {{class 'NoDefaultInitFromFunction' has no initializers}}
   let x: Int64 = 42
+}
+
+// A subclass cannot be generic, or be declared in a generic context.
+final class GenericSub<T>: SubclassableShared {} // expected-error {{generic class 'GenericSub' cannot be generic because it subclasses a C++ foreign reference type}}
+
+struct GenericOuter<T> {
+  final class NestedSub: SubclassableShared {} // expected-error {{class 'NestedSub' cannot be declared in a generic context because it subclasses a C++ foreign reference type}}
+}
+
+// The C++ destructor of the base destroys the stored properties of a subclass,
+// but it cannot run a deinitializer.
+final class SubWithDeinit: SubclassableShared {
+  var s = ""
+  deinit {} // expected-error {{deinitializer cannot be declared in class 'SubWithDeinit' because it subclasses a C++ foreign reference type}}
 }

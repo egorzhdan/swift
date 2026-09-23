@@ -3583,13 +3583,13 @@ Expr *ArgumentSource::findStorageReferenceExprForBorrow(SILModule &M) && {
   return lvExpr;
 }
 
-/// Whether every reference `expr` goes through is strong, so that a dependence
-/// on storage interior to the referent can be rooted in something that outlives
-/// it.
+/// If every reference `expr` goes through is strong, so that a dependence on
+/// storage interior to the referent can be rooted in something that outlives
+/// it, return the variable that the chain of references starts at.
 ///
 /// Weak and unowned references don't keep an instance alive, so they break
 /// the strong chain.
-static bool hasStrongReferenceChain(Expr *expr) {
+static VarDecl *getStrongReferenceChainRoot(Expr *expr) {
   auto isStrong = [](ConcreteDeclRef declRef) -> VarDecl * {
     auto *vd = dyn_cast_or_null<VarDecl>(declRef.getDecl());
     if (!vd)
@@ -3603,21 +3603,21 @@ static bool hasStrongReferenceChain(Expr *expr) {
 
   expr = expr->getSemanticsProvidingExpr();
   if (auto *load = dyn_cast<LoadExpr>(expr))
-    return hasStrongReferenceChain(load->getSubExpr());
+    return getStrongReferenceChainRoot(load->getSubExpr());
   if (auto *force = dyn_cast<ForceValueExpr>(expr))
-    return hasStrongReferenceChain(force->getSubExpr());
+    return getStrongReferenceChainRoot(force->getSubExpr());
   if (auto *bind = dyn_cast<BindOptionalExpr>(expr))
-    return hasStrongReferenceChain(bind->getSubExpr());
+    return getStrongReferenceChainRoot(bind->getSubExpr());
   if (auto *optEval = dyn_cast<OptionalEvaluationExpr>(expr))
-    return hasStrongReferenceChain(optEval->getSubExpr());
+    return getStrongReferenceChainRoot(optEval->getSubExpr());
   if (auto *dre = dyn_cast<DeclRefExpr>(expr))
-    return isStrong(dre->getDeclRef()) != nullptr;
+    return isStrong(dre->getDeclRef());
   if (auto *mre = dyn_cast<MemberRefExpr>(expr)) {
     if (!isStrong(mre->getMember()))
-      return false;
-    return hasStrongReferenceChain(mre->getBase());
+      return nullptr;
+    return getStrongReferenceChainRoot(mre->getBase());
   }
-  return false;
+  return nullptr;
 }
 
 ManagedValue
@@ -3755,8 +3755,15 @@ SILGenFunction::tryEmitAddressableParameterAsAddress(ArgumentSource &&arg,
       // instance stays alive.
       //
       // This only makes sense for a 'let' field, because it cannot be modified.
-      if (!vd->isLet() || accessKind != AccessKind::Read
-          || !hasStrongReferenceChain(lookupExpr->getBase())) {
+      auto root = getStrongReferenceChainRoot(lookupExpr->getBase());
+      if (!vd->isLet() || accessKind != AccessKind::Read || !root) {
+        return notAddressable();
+      }
+      // While the arguments of a `self.init` or `super.init` delegation are
+      // emitted, the delegated-to initializer usually consumes `self`, so an
+      // instance reached from `self` might not stay alive across the call.
+      if (SelfInitDelegationState != NormalSelf && root->isSelfParameter() &&
+          !isInitDelegationBorrowingSelf()) {
         return notAddressable();
       }
       // Project the field as an l-value: RefElementComponent borrows the

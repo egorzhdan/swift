@@ -670,11 +670,13 @@ static MetadataResponse emitNominalMetadataRef(IRGenFunction &IGF,
 
     llvm::Value *metadata = IGF.IGM.getAddrOfTypeMetadata(theType);
     
-    // We need to realize classes with the ObjC runtime.
+    // We need to realize classes with the ObjC runtime. The metadata of a Swift
+    // subclass of a C++ foreign reference type is not a class object.
     if (auto c = dyn_cast<ClassDecl>(theDecl)) {
       
       assert(hasKnownSwiftMetadata(IGF.IGM, c));
-      metadata = emitIdempotentClassMetadataInitialization(IGF, metadata);
+      if (!c->getForeignReferenceSuperclassOrSelf())
+        metadata = emitIdempotentClassMetadataInitialization(IGF, metadata);
     }
     auto response = MetadataResponse::forComplete(metadata);
     IGF.setScopedLocalTypeMetadata(theType, response);
