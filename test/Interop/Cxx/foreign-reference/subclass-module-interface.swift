@@ -17,6 +17,8 @@
 
 // CHECK: public class DeletedDtorShared {
 
+// CHECK: public class ImmortalWithVirtualDtor {
+
 // CHECK-OFF: public class SubclassableShared {
 // CHECK-OFF: public class DerivedSubclassableShared : SubclassableShared {
 // CHECK-OFF: public class NonVirtualShared {
