@@ -5578,6 +5578,46 @@ RValue RValueEmitter::visitRebindSelfInConstructorExpr(
   auto *otherCtor = E->getCalledConstructor(isChaining)->getDecl();
   assert(otherCtor);
 
+  // A Swift class that subclasses a C++ foreign reference type has already had
+  // its storage allocated implicitly. `super.init` constructs the C++ base
+  // subobject in place. Emit it as the `initializeForeignReferenceSubclass`
+  // builtin.
+  if (auto superClass = otherCtor->getDeclContext()->getSelfClassDecl()) {
+    if (superClass->isForeignReferenceType()) {
+      auto &ctx = SGF.getASTContext();
+
+      // Evaluate the base-constructor arguments.
+      SmallVector<SILValue, 4> ctorArgs;
+      for (auto arg : *E->getConstructorCall()->getArgs())
+        ctorArgs.push_back(
+            SGF.emitRValueAsSingleValue(arg.getExpr()).forward(SGF));
+
+      SILValue selfAddr =
+          SGF.emitAddressOfLocalVarDecl(E, selfDecl, selfTy->getCanonicalType(),
+                                        SGFAccessKind::Write)
+              .getLValueAddress();
+      // Construct the base subobject in place, forwarding any constructor
+      // arguments, and store the result back.
+      SILValue selfValue =
+          SGF.B.createLoad(E, selfAddr, LoadOwnershipQualifier::Take);
+      auto builtinName =
+          getBuiltinName(BuiltinValueKind::InitializeForeignReferenceSubclass);
+      auto builtinDecl = cast<FuncDecl>(
+          getBuiltinValueDecl(ctx, ctx.getIdentifier(builtinName)));
+      auto subs =
+          SubstitutionMap::get(builtinDecl->getGenericSignature(), {selfTy},
+                               ArrayRef<ProtocolConformanceRef>{});
+      SmallVector<SILValue, 4> builtinArgs;
+      builtinArgs.push_back(selfValue);
+      builtinArgs.append(ctorArgs.begin(), ctorArgs.end());
+      SILValue newSelf =
+          SGF.B.createBuiltin(E, ctx.getIdentifier(builtinName),
+                              SGF.getLoweredType(selfTy), subs, builtinArgs);
+      SGF.B.createStore(E, newSelf, selfAddr, StoreOwnershipQualifier::Init);
+      return SGF.emitEmptyTupleRValue(E, C);
+    }
+  }
+
   // The optionality depth of the 'new self' value. This can be '2' if the ctor
   // we are delegating/chaining to is both throwing and failable, or more if
   // 'self' is optional.

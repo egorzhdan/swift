@@ -1751,6 +1751,13 @@ void ElementUseCollector::collectClassSelfUses(
         if (isFlowSensitiveSelfIsolation(*builtinKind)) {
           Kind = DIUseKind::FlowSensitiveSelfIsolation;
         }
+        // The `initializeForeignReferenceSubclass` builtin constructs the C++
+        // base subobject of a foreign reference subclass. It stands in for
+        // `super.init`.
+        if (*builtinKind ==
+            BuiltinValueKind::InitializeForeignReferenceSubclass) {
+          Kind = DIUseKind::SelfInit;
+        }
       }
     }
 
