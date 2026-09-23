@@ -8,9 +8,15 @@ _Pragma("clang assume_nonnull begin")
   __attribute__((swift_attr("release:" #_release)))
 
 #define SWIFT_RETURNS_RETAINED __attribute__((swift_attr("returns_retained")))
+#define SWIFT_RETURNS_UNRETAINED                                               \
+  __attribute__((swift_attr("returns_unretained")))
 
 struct SubclassableShared {
   int refcount = 1;
+  int payload = 0;
+
+  int get() const { return payload; }
+  void set(int x) { payload = x; }
 
   virtual ~SubclassableShared() {}
 } SWIFT_SHARED_REFERENCE(retainSubclassableShared, releaseSubclassableShared);
@@ -22,6 +28,18 @@ inline void releaseSubclassableShared(SubclassableShared *t) {
 }
 
 struct DerivedSubclassableShared : SubclassableShared {};
+
+struct DerivedOwnRefcountShared : SubclassableShared {
+} SWIFT_SHARED_REFERENCE(retainDerivedOwnRefcountShared,
+                         releaseDerivedOwnRefcountShared);
+
+inline void retainDerivedOwnRefcountShared(DerivedOwnRefcountShared *t) {
+  ++t->refcount;
+}
+inline void releaseDerivedOwnRefcountShared(DerivedOwnRefcountShared *t) {
+  if (--t->refcount <= 0)
+    delete t;
+}
 
 struct NonVirtualShared {
   int refcount = 1;
@@ -156,6 +174,8 @@ inline void releaseRefcountedArg(RefcountedArg *t) {
     delete t;
 }
 
+// A base with constructors taking their parameters in each of the ways a C++
+// constructor can. The trailing parameters only tell the overloads apart.
 struct ReferenceConstructed {
   int refcount = 1;
   int seen = 0;
@@ -202,6 +222,32 @@ inline void retainOverloadedConstructed(OverloadedConstructed *t) {
   ++t->refcount;
 }
 inline void releaseOverloadedConstructed(OverloadedConstructed *t) {
+  if (--t->refcount <= 0)
+    delete t;
+}
+
+// A base that keeps the reference it is constructed with.
+struct KeepsReference {
+  int refcount = 1;
+  const int *reference = nullptr;
+
+  SWIFT_RETURNS_RETAINED KeepsReference(const int &i) : reference(&i) {}
+
+  int read() const { return *reference; }
+
+  // Whether the kept reference points into this object itself, i.e. at a stored
+  // property of the Swift subclass rather than at a temporary.
+  bool refersIntoSelf() const {
+    auto ref = reinterpret_cast<const char *>(reference);
+    auto self = reinterpret_cast<const char *>(this);
+    return ref >= self && ref < self + 256;
+  }
+
+  virtual ~KeepsReference() {}
+} SWIFT_SHARED_REFERENCE(retainKeepsReference, releaseKeepsReference);
+
+inline void retainKeepsReference(KeepsReference *t) { ++t->refcount; }
+inline void releaseKeepsReference(KeepsReference *t) {
   if (--t->refcount <= 0)
     delete t;
 }
@@ -258,6 +304,93 @@ inline void releaseSharedWithFactoryOnly(SharedWithFactoryOnly *t) {
     delete t;
 }
 
+struct SecondaryPolymorphic {
+  int secondary = 7;
+
+  virtual int getSecondary() const { return secondary; }
+  virtual ~SecondaryPolymorphic() {}
+};
+
+// A base with two v-table pointers: the one at offset 0, which it shares with
+// its primary base `SubclassableShared`, and the one of its
+// `SecondaryPolymorphic` subobject.
+struct MultiplyInheritedShared : SubclassableShared, SecondaryPolymorphic {
+} SWIFT_SHARED_REFERENCE(retainMultiplyInheritedShared,
+                         releaseMultiplyInheritedShared);
+
+inline void retainMultiplyInheritedShared(MultiplyInheritedShared *t) {
+  ++t->refcount;
+}
+inline void releaseMultiplyInheritedShared(MultiplyInheritedShared *t) {
+  if (--t->refcount <= 0)
+    delete t;
+}
+
+// Dispatches through the v-table pointer of the `SecondaryPolymorphic`
+// subobject.
+inline int callSecondary(const MultiplyInheritedShared *t) {
+  return static_cast<const SecondaryPolymorphic *>(t)->getSecondary();
+}
+
+struct VirtualBaseShared : virtual SecondaryPolymorphic {
+  int refcount = 1;
+
+  virtual ~VirtualBaseShared() {}
+} SWIFT_SHARED_REFERENCE(retainVirtualBaseShared, releaseVirtualBaseShared);
+
+inline void retainVirtualBaseShared(VirtualBaseShared *t) { ++t->refcount; }
+inline void releaseVirtualBaseShared(VirtualBaseShared *t) {
+  if (--t->refcount <= 0)
+    delete t;
+}
+
+struct DerivedFromVirtualBaseShared : VirtualBaseShared {};
+
+inline int &liveUnretainedConstructed() {
+  static int count = 0;
+  return count;
+}
+inline int getLiveUnretainedConstructed() { return liveUnretainedConstructed(); }
+
+// A base whose constructor returns the new object unretained: its reference
+// count starts at 0, and the first reference retains it.
+struct UnretainedConstructed {
+  int refcount = 0;
+
+  SWIFT_RETURNS_UNRETAINED UnretainedConstructed() {
+    ++liveUnretainedConstructed();
+  }
+
+  int getRefcount() const { return refcount; }
+
+  virtual ~UnretainedConstructed() { --liveUnretainedConstructed(); }
+} SWIFT_SHARED_REFERENCE(retainUnretainedConstructed,
+                         releaseUnretainedConstructed);
+
+inline void retainUnretainedConstructed(UnretainedConstructed *t) {
+  ++t->refcount;
+}
+inline void releaseUnretainedConstructed(UnretainedConstructed *t) {
+  if (--t->refcount <= 0)
+    delete t;
+}
+
+// A base with tail padding, which the stored properties of a Swift subclass
+// reuse: on 64-bit platforms, its data ends at 12 bytes, but its size is 16.
+struct TailPaddedShared {
+  int refcount = 1;
+
+  SWIFT_RETURNS_RETAINED TailPaddedShared() {}
+
+  virtual ~TailPaddedShared() {}
+} SWIFT_SHARED_REFERENCE(retainTailPaddedShared, releaseTailPaddedShared);
+
+inline void retainTailPaddedShared(TailPaddedShared *t) { ++t->refcount; }
+inline void releaseTailPaddedShared(TailPaddedShared *t) {
+  if (--t->refcount <= 0)
+    delete t;
+}
+
 // A type with an initializer imported from a global function rather than from a
 // C++ constructor.
 struct SharedWithFunctionInit {
@@ -308,9 +441,67 @@ SWIFT_RETURNS_RETAINED SharedWithFunctionDefaultInit *
 makeSharedWithFunctionDefaultInit()
     __attribute__((swift_name("SharedWithFunctionDefaultInit.init()")));
 
+// On 64-bit platforms, the data of the bitfield ends at 14 bytes.
+struct BitfieldLastShared {
+  int refcount = 1;
+  unsigned flags : 12;
+
+  SWIFT_RETURNS_RETAINED BitfieldLastShared() : flags(0xabc) {}
+
+  unsigned getFlags() const { return flags; }
+
+  virtual ~BitfieldLastShared() {}
+} SWIFT_SHARED_REFERENCE(retainBitfieldLastShared, releaseBitfieldLastShared);
+
+inline void retainBitfieldLastShared(BitfieldLastShared *t) { ++t->refcount; }
+inline void releaseBitfieldLastShared(BitfieldLastShared *t) {
+  if (--t->refcount <= 0)
+    delete t;
+}
+
+struct UnimportedFieldLastShared {
+  int refcount = 1;
+  NonVirtualShared inner; // not imported!
+
+  SWIFT_RETURNS_RETAINED UnimportedFieldLastShared() { inner.refcount = 42; }
+
+  int getInnerRefcount() const { return inner.refcount; }
+
+  virtual ~UnimportedFieldLastShared() {}
+} SWIFT_SHARED_REFERENCE(retainUnimportedFieldLastShared,
+                         releaseUnimportedFieldLastShared);
+
+inline void retainUnimportedFieldLastShared(UnimportedFieldLastShared *t) {
+  ++t->refcount;
+}
+inline void releaseUnimportedFieldLastShared(UnimportedFieldLastShared *t) {
+  if (--t->refcount <= 0)
+    delete t;
+}
+
+struct VTablePointerOnlyShared {
+  SWIFT_RETURNS_RETAINED VTablePointerOnlyShared() {}
+
+  virtual int tag() const { return 42; }
+
+  virtual ~VTablePointerOnlyShared() {}
+} SWIFT_SHARED_REFERENCE(retainVTablePointerOnlyShared,
+                         releaseVTablePointerOnlyShared);
+
+inline void retainVTablePointerOnlyShared(VTablePointerOnlyShared *t) {}
+inline void releaseVTablePointerOnlyShared(VTablePointerOnlyShared *t) {}
+
 inline SharedWithFunctionDefaultInit *makeSharedWithFunctionDefaultInit() {
   return new SharedWithFunctionDefaultInit(0);
 }
+
+struct ImmortalWithVirtualDtor {
+  int value = 7;
+
+  virtual ~ImmortalWithVirtualDtor() {}
+} __attribute__((swift_attr("import_reference")))
+__attribute__((swift_attr("retain:immortal")))
+__attribute__((swift_attr("release:immortal")));
 
 #if __has_feature(nullability)
 _Pragma("clang assume_nonnull end")

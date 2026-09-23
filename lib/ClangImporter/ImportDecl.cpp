@@ -2924,14 +2924,19 @@ namespace {
                                       FinalAttr(/*IsImplicit=*/true));
         // A foreign reference type can be subclassed from Swift only if it has
         // a virtual destructor: deleting a Swift subclass through a base
-        // pointer must run the most-derived destructor.
+        // pointer must run the most-derived destructor. It also must not have
+        // virtual bases, which a Swift subclass would have to construct, and
+        // must not be immortal, since instances of a Swift subclass are
+        // allocated by Swift and must be released.
         else if (cxxRecordDecl &&
                  Impl.SwiftContext.LangOpts.hasFeature(
                      Feature::ForeignReferenceTypeSubclassing)) {
           auto dtor = cxxRecordDecl->getDestructor();
           if (dtor && dtor->isVirtual() && !dtor->isDeleted() &&
               (dtor->getAccess() == clang::AS_public ||
-               dtor->getAccess() == clang::AS_protected))
+               dtor->getAccess() == clang::AS_protected) &&
+              cxxRecordDecl->getNumVBases() == 0 &&
+              classDecl->hasRefCountingAnnotations())
             classDecl->overwriteAccess(AccessLevel::Open);
         }
       }
